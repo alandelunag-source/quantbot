@@ -222,7 +222,13 @@ def cmd_status(args: argparse.Namespace) -> None:
     from strategies import ALL_STRATEGIES
     from backtesting.forward_test import ForwardTest
 
-    codes = [args.strategy] if args.strategy else list(ALL_STRATEGIES.keys())
+    if hasattr(args, "strategies") and args.strategies:
+        codes = [c.strip() for c in args.strategies.split(",")]
+    elif args.strategy:
+        codes = [args.strategy]
+    else:
+        codes = list(ALL_STRATEGIES.keys())
+
     for code in codes:
         strategy = _get_strategy(code)
         ft = ForwardTest(strategy)
@@ -261,6 +267,7 @@ def main() -> None:
     # status
     status_p = sub.add_parser("status", help="Current positions + P&L")
     status_p.add_argument("--strategy", help="Single strategy (default: all)")
+    status_p.add_argument("--strategies", help="Comma-separated strategy codes (e.g. s09,s02,s06)")
 
     args = parser.parse_args()
     _setup_logging(args.verbose)
