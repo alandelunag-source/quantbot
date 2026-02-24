@@ -133,43 +133,89 @@ def _print_comparison(results: list) -> None:
 
 def cmd_paper(args: argparse.Namespace) -> None:
     from strategies import ALL_STRATEGIES
-    from backtesting.forward_test import ForwardTest
+    from backtesting.forward_test import ForwardTest, is_trading_day
 
-    codes = [args.strategy] if args.strategy else list(ALL_STRATEGIES.keys())
+    # --strategies s09,s02,s06 overrides --strategy
+    if hasattr(args, "strategies") and args.strategies:
+        codes = [c.strip() for c in args.strategies.split(",")]
+    elif args.strategy:
+        codes = [args.strategy]
+    else:
+        codes = list(ALL_STRATEGIES.keys())
+
     strategies = [_get_strategy(c) for c in codes]
     forward_tests = [ForwardTest(s) for s in strategies]
 
-    print(f"Starting paper trading for: {[s.name for s in strategies]}")
-    print("Press Ctrl+C to stop.\n")
+    tracker = PerformanceTracker(initial_capital=settings.INITIAL_CAPITAL * len(strategies))
 
-    tracker = PerformanceTracker(
-        initial_capital=settings.INITIAL_CAPITAL * len(strategies)
-    )
+    if args.once:
+        # Single daily update — designed for Task Scheduler / cron
+        _paper_run_once(forward_tests, tracker)
+    else:
+        # Daemon: sleeps and wakes up once per trading day at ~4pm
+        print(f"Paper trading daemon started for: {[s.name for s in strategies]}")
+        print("Runs once per trading day at ~16:00. Press Ctrl+C to stop.\n")
+        try:
+            while True:
+                if is_trading_day():
+                    now = datetime.now()
+                    # Run between 16:00 and 16:30 (after market close)
+                    if 16 <= now.hour < 17:
+                        _paper_run_once(forward_tests, tracker)
+                        # Sleep past the 16:00-16:30 window
+                        time.sleep(3600)
+                        continue
+                time.sleep(300)  # check every 5 min
+        except KeyboardInterrupt:
+            print("\nStopping. Final status:")
+            cmd_status(args)
 
-    try:
-        while True:
-            today = datetime.today().strftime("%Y-%m-%d")
-            strategy_values = {}
 
-            for ft in forward_tests:
-                universe = ft.strategy.get_universe()
-                prices = _get_current_prices(universe)
-                summary = ft.update(prices)
-                ft.print_status()
-                strategy_values[ft.strategy.name] = summary["portfolio_value"]
+def _paper_run_once(forward_tests, tracker) -> None:
+    """Execute one daily paper trading update across all strategies."""
+    from backtesting.forward_test import is_trading_day
 
-            agg_value = sum(strategy_values.values())
-            tracker.update(today, agg_value, strategy_values)
-            tracker.print_dashboard()
+    today = datetime.today().strftime("%Y-%m-%d")
 
-            # Sleep until next market open (simplified: just wait 60s in paper mode)
-            interval = 60
-            print(f"Next update in {interval}s... (Ctrl+C to stop)")
-            time.sleep(interval)
+    if not is_trading_day():
+        print(f"[{today}] Not a trading day — skipping.")
+        return
 
-    except KeyboardInterrupt:
-        print("\n\nStopping paper trading. Final status:")
+    print(f"\n{'='*56}")
+    print(f"  PAPER TRADING UPDATE  {today}")
+    print(f"{'='*56}")
+
+    strategy_values = {}
+    for ft in forward_tests:
+        universe = ft.strategy.get_universe()
+        prices = _get_current_prices(universe)
+        if not prices:
+            print(f"  [{ft.strategy.name}] No price data — skipping")
+            continue
+        summary = ft.update(prices)
+        ft.print_status()
+        strategy_values[ft.strategy.name] = summary["portfolio_value"]
+
+    if strategy_values:
+        agg_value = sum(strategy_values.values())
+        tracker.update(today, agg_value, strategy_values)
         tracker.print_dashboard()
+
+    # Append to CSV log for 1-month review
+    _append_csv_log(today, strategy_values)
+
+
+def _append_csv_log(today: str, strategy_values: dict) -> None:
+    """Append one row per strategy to state/paper_log.csv for 1-month review."""
+    from pathlib import Path
+    log_path = Path("state/paper_log.csv")
+    log_path.parent.mkdir(exist_ok=True)
+    header_needed = not log_path.exists()
+    with open(log_path, "a") as f:
+        if header_needed:
+            f.write("date,strategy,portfolio_value\n")
+        for strat, pv in strategy_values.items():
+            f.write(f"{today},{strat},{pv:.2f}\n")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -208,7 +254,9 @@ def main() -> None:
 
     # paper
     paper_p = sub.add_parser("paper", help="Paper trading (live forward test)")
-    paper_p.add_argument("--strategy", help="Single strategy (default: all)")
+    paper_p.add_argument("--strategy", help="Single strategy code (e.g. s09)")
+    paper_p.add_argument("--strategies", help="Comma-separated strategy codes (e.g. s09,s02,s06)")
+    paper_p.add_argument("--once", action="store_true", help="Run one daily update and exit (for Task Scheduler)")
 
     # status
     status_p = sub.add_parser("status", help="Current positions + P&L")

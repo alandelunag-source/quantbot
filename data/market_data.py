@@ -89,6 +89,14 @@ def get_vix(days: int = 365) -> pd.Series:
     return df.iloc[:, 0].rename("VIX")
 
 
+def get_vix9d(days: int = 365) -> pd.Series:
+    """Return daily VIX9D closing values (9-day expected volatility)."""
+    df = get_close(["^VIX9D"], days=days)
+    if df.empty:
+        return pd.Series(dtype=float)
+    return df.iloc[:, 0].rename("VIX9D")
+
+
 def get_yield_spread(days: int = 365) -> pd.Series:
     """
     Return 2Y-10Y yield spread (bps).

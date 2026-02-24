@@ -14,9 +14,9 @@ Inputs (checked weekly):
   SPY vs SMA(200)    | HYG/LQD credit ratio (proxy for credit risk appetite)
 
 Regime rules:
-  Risk-On:  VIX < 18 AND curve > 0 AND SPY > SMA(200)              → 100% QQQ
-  Neutral:  mixed signals (default)                                  → 60% SPY + 40% TLT
-  Risk-Off: VIX > 28 OR (curve < -0.5 AND SPY < SMA(200))          → 60% SHY + 40% GLD
+  Risk-On:  VIX < 18 AND curve > 0 AND SPY > SMA(200)              -> 100% QQQ
+  Neutral:  mixed signals (default)                                  -> 60% SPY + 40% TLT
+  Risk-Off: VIX > 28 OR (curve < -0.5 AND SPY < SMA(200))          -> 60% SHY + 40% GLD
 
 Novel enhancement: use HYG/LQD ratio as a "credit risk appetite" tiebreaker.
 When HYG/LQD rises (credit risk-on), boost equity allocation +10%.
@@ -122,14 +122,16 @@ class MacroRegime(Strategy):
 
             alloc = REGIME_ALLOC[new_regime].copy()
 
-            # Apply to all dates until next week
+            # Zero entire window first so stale regime weights don't bleed through
             next_loc = min(loc + 5, len(prices))
+            signals.iloc[loc:next_loc, :] = 0.0
             for t, w in alloc.items():
                 if t in signals.columns:
-                    signals[t].iloc[loc:next_loc] = w
+                    col_idx = signals.columns.get_loc(t)
+                    signals.iloc[loc:next_loc, col_idx] = w
 
             if new_regime != current_regime:
-                logger.info("[MacroRegime] %s → %s on %s", current_regime, new_regime, date.date())
+                logger.info("[MacroRegime] %s -> %s on %s", current_regime, new_regime, date.date())
                 current_regime = new_regime
 
         return signals

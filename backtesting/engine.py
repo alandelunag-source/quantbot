@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 
 from config import settings
-from data.market_data import get_close, get_volume, get_vix, get_yield_spread
+from data.market_data import get_close, get_volume, get_vix, get_vix9d, get_yield_spread
 from data.indicators import ic as compute_ic
 
 logger = logging.getLogger(__name__)
@@ -109,7 +109,7 @@ class BacktestResult:
         print(f"\n{'='*52}")
         print(f"  Backtest: {self.strategy_name}  [{label}]")
         print(f"{'='*52}")
-        print(f"  Period      : {r.index[0].date() if not r.empty else 'n/a'}  →  {r.index[-1].date() if not r.empty else 'n/a'}")
+        print(f"  Period      : {r.index[0].date() if not r.empty else 'n/a'}  ->  {r.index[-1].date() if not r.empty else 'n/a'}")
         print(f"  Ann. Return : {self.annualized_return(r):.2%}")
         print(f"  Sharpe      : {self.sharpe(r):.2f}")
         print(f"  Max DD      : {self.max_drawdown(eq):.2%}")
@@ -120,8 +120,8 @@ class BacktestResult:
         print(f"  Alpha/SPY   : {self.alpha_vs('SPY'):.2%}")
         print(f"  Alpha/QQQ   : {self.alpha_vs('QQQ'):.2%}")
         if oos_only:
-            print(f"  IS period   : {self.is_period[0]} → {self.is_period[1]}")
-            print(f"  OOS period  : {self.oos_period[0]} → {self.oos_period[1]}")
+            print(f"  IS period   : {self.is_period[0]} -> {self.is_period[1]}")
+            print(f"  OOS period  : {self.oos_period[0]} -> {self.oos_period[1]}")
         print(f"{'='*52}\n")
 
 
@@ -165,8 +165,9 @@ class BacktestEngine:
 
         # Fetch macro data for strategies that need it
         vix = get_vix(days=days + 60).reindex(prices.index)
+        vix9d = get_vix9d(days=days + 60).reindex(prices.index)
         yield_spread = get_yield_spread(days=days + 60).reindex(prices.index)
-        extra.update({"volume": volume, "vix": vix, "yield_spread": yield_spread})
+        extra.update({"volume": volume, "vix": vix, "vix9d": vix9d, "yield_spread": yield_spread})
 
         # Generate signals
         signals = self.strategy.generate_signals(prices, **extra)

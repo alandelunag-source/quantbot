@@ -89,9 +89,12 @@ class DollarCarry(Strategy):
                 alloc = RISK_ON_ALLOC if intf_ok else NEUTRAL_ALLOC
 
             next_loc = min(loc + 22, len(prices))
+            # Zero entire window first so stale regime weights don't bleed through
+            signals.iloc[loc:next_loc, :] = 0.0
             for t, w in alloc.items():
                 if t in signals.columns:
-                    signals[t].iloc[loc:next_loc] = w
+                    col_idx = signals.columns.get_loc(t)
+                    signals.iloc[loc:next_loc, col_idx] = w
 
         return signals
 
