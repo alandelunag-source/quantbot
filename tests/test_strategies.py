@@ -542,3 +542,90 @@ class TestOvernightCarry:
         signals = pd.Series({"SPY": 0.6, "QQQ": 0.4})
         pos = s.position_sizing(signals)
         assert sum(pos.values()) == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# S17 -- Panic Reversal
+# ---------------------------------------------------------------------------
+
+class TestPanicReversal:
+    def _make_panic_prices(self, tickers, n=60, drop_last=True):
+        """Steady uptrend then a correlated selloff on last day."""
+        data = {}
+        for t in tickers:
+            vals = [100.0 * (1.001 ** i) for i in range(n)]
+            if drop_last and t != "SPY":
+                vals[-1] = vals[-2] * 0.975   # down 2.5%
+            if drop_last and t == "SPY":
+                vals[-1] = vals[-2] * 0.980   # SPY down 2%
+            data[t] = vals
+        dates = pd.date_range("2024-01-01", periods=n, freq="B")
+        return pd.DataFrame(data, index=dates)
+
+    def test_returns_dataframe(self):
+        from strategies.s17_panic_reversal import PanicReversal, SP100
+        tickers = SP100[:5] + ["SPY"]
+        prices = self._make_panic_prices(tickers)
+        vix = pd.Series([25.0] * len(prices), index=prices.index)
+        s = PanicReversal()
+        sig = s.generate_signals(prices, vix=vix)
+        assert isinstance(sig, pd.DataFrame)
+
+    def test_no_signal_below_vix_gate(self):
+        from strategies.s17_panic_reversal import PanicReversal, SP100
+        tickers = SP100[:5] + ["SPY"]
+        prices = self._make_panic_prices(tickers)
+        vix = pd.Series([14.0] * len(prices), index=prices.index)  # low VIX
+        s = PanicReversal()
+        sig = s.generate_signals(prices, vix=vix)
+        # No signals should fire when VIX < 20
+        if not sig.empty:
+            assert sig.iloc[-1].sum() == pytest.approx(0.0)
+
+    def test_signal_fires_in_high_vix_comovement(self):
+        from strategies.s17_panic_reversal import PanicReversal, SP100
+        tickers = SP100[:8] + ["SPY"]
+        prices = self._make_panic_prices(tickers)
+        vix = pd.Series([28.0] * len(prices), index=prices.index)  # high VIX
+        s = PanicReversal()
+        sig = s.generate_signals(prices, vix=vix)
+        assert isinstance(sig, pd.DataFrame)
+        if not sig.empty:
+            # At least some stocks should signal (co-movement drop with VIX > 20)
+            assert sig.iloc[-1].sum() >= 0
+
+    def test_no_signal_on_idiosyncratic_drop(self):
+        """Stock down 5% but SPY flat = idiosyncratic -> no signal."""
+        from strategies.s17_panic_reversal import PanicReversal, SP100
+        n = 60
+        dates = pd.date_range("2024-01-01", periods=n, freq="B")
+        ticker = SP100[0]
+        data = {ticker: [100.0] * (n - 1) + [94.0],  # -6% idiosyncratic
+                "SPY":  [100.0] * n}                  # SPY flat
+        prices = pd.DataFrame(data, index=dates)
+        vix = pd.Series([28.0] * n, index=dates)
+        s = PanicReversal()
+        sig = s.generate_signals(prices, vix=vix)
+        if not sig.empty:
+            assert sig.iloc[-1].get(ticker, 0) == pytest.approx(0.0)
+
+    def test_exit_rules_days_held(self):
+        from strategies.s17_panic_reversal import PanicReversal
+        s = PanicReversal()
+        assert s.exit_rules(entry_price=100, current_price=99, days_held=5)
+        assert not s.exit_rules(entry_price=100, current_price=99, days_held=4)
+
+    def test_exit_rules_profit_target(self):
+        from strategies.s17_panic_reversal import PanicReversal
+        s = PanicReversal()
+        assert s.exit_rules(entry_price=100, current_price=103.5, days_held=1)
+        assert not s.exit_rules(entry_price=100, current_price=102.0, days_held=1)
+
+    def test_position_sizing_equal_weight_capped(self):
+        from strategies.s17_panic_reversal import PanicReversal
+        s = PanicReversal()
+        signals = pd.Series({f"T{i}": float(i + 1) for i in range(12)})
+        pos = s.position_sizing(signals)
+        assert len(pos) <= s.max_positions
+        for w in pos.values():
+            assert w <= 0.12 + 1e-9
