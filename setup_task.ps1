@@ -17,7 +17,7 @@ Register-ScheduledTask `
     -Action $action `
     -Trigger $trigger `
     -Settings $settings `
-    -Description "Daily paper trading update: S09 S02 S06 S10 S07 at 4:15pm Mon-Fri" `
+    -Description "Daily paper trading update: all 15 strategies at 4:15pm Mon-Fri" `
     -Force | Select-Object TaskName, State
 
 Write-Host "Task registered. Verify with: schtasks /Query /TN 'Quantbot Daily Paper Trading' /FO LIST"

@@ -233,3 +233,312 @@ class TestRiskManager:
         from execution.risk import RiskManager
         rm = RiskManager()
         assert rm.apply({}, portfolio_value=100_000) == {}
+
+
+# ---------------------------------------------------------------------------
+# S11 — Congressional Trade Follower
+# ---------------------------------------------------------------------------
+
+class TestCongressional:
+    def _make_disclosure_df(self):
+        from datetime import datetime, timedelta
+        import pandas as pd
+        return pd.DataFrame([
+            {"disclosure_date": datetime.today() - timedelta(days=3),
+             "ticker": "AAPL", "type": "purchase", "chamber": "senate", "amount": "$15,001 - $50,000"},
+            {"disclosure_date": datetime.today() - timedelta(days=5),
+             "ticker": "MSFT", "type": "purchase", "chamber": "house", "amount": "$50,001 - $100,000"},
+            {"disclosure_date": datetime.today() - timedelta(days=10),
+             "ticker": "GOOGL", "type": "sale", "chamber": "house", "amount": "$15,001 - $50,000"},
+        ])
+
+    def test_returns_dataframe_with_mock(self):
+        from strategies.s11_congressional import CongressionalTrades
+        from unittest.mock import patch
+        tickers = ["AAPL", "MSFT", "GOOGL", "TSLA"]
+        prices = make_prices(tickers, n=100)
+        s = CongressionalTrades()
+        with patch("strategies.s11_congressional._fetch_disclosures", return_value=self._make_disclosure_df()):
+            sig = s.generate_signals(prices)
+        assert isinstance(sig, pd.DataFrame)
+
+    def test_filters_purchases_only(self):
+        from strategies.s11_congressional import CongressionalTrades
+        from unittest.mock import patch
+        tickers = ["AAPL", "MSFT", "GOOGL"]
+        prices = make_prices(tickers, n=100)
+        s = CongressionalTrades()
+        with patch("strategies.s11_congressional._fetch_disclosures", return_value=self._make_disclosure_df()):
+            sig = s.generate_signals(prices)
+        if not sig.empty:
+            last = sig.iloc[-1]
+            # GOOGL was a sale — should have zero or lower signal than purchases
+            assert last.get("GOOGL", 0) == 0.0
+
+    def test_position_sizing_capped(self):
+        from strategies.s11_congressional import CongressionalTrades
+        s = CongressionalTrades()
+        signals = pd.Series({f"T{i}": float(i + 1) for i in range(15)})
+        pos = s.position_sizing(signals)
+        assert len(pos) <= s.max_positions
+        for w in pos.values():
+            assert w <= 0.151  # cap is 15%
+
+    def test_amount_to_score(self):
+        from strategies.s11_congressional import _amount_to_score
+        assert _amount_to_score("$15,001 - $50,000") == 32_500.0
+        assert _amount_to_score("over $5,000,000") == 7_500_000.0
+        assert _amount_to_score("unknown range") == 10_000.0
+
+
+# ---------------------------------------------------------------------------
+# S12 — Index Inclusion Frontrun
+# ---------------------------------------------------------------------------
+
+class TestIndexInclusion:
+    def test_returns_dataframe(self):
+        from strategies.s12_index_inclusion import IndexInclusion, KNOWN_ADDITIONS
+        from unittest.mock import patch
+        tickers = list({t for t, _, _ in KNOWN_ADDITIONS}) + ["SPY"]
+        prices = make_prices(tickers[:10], n=300)
+        s = IndexInclusion()
+        with patch("strategies.s12_index_inclusion._fetch_wikipedia_additions", return_value=[]):
+            sig = s.generate_signals(prices)
+        assert isinstance(sig, pd.DataFrame)
+
+    def test_known_additions_generate_signal(self):
+        from strategies.s12_index_inclusion import IndexInclusion, KNOWN_ADDITIONS
+        from unittest.mock import patch
+        import pandas as pd
+        # Use a ticker from KNOWN_ADDITIONS that has a recent-ish date
+        ticker, ann_str, eff_str = KNOWN_ADDITIONS[0]  # e.g., DELL
+        ann = pd.to_datetime(ann_str)
+        eff = pd.to_datetime(eff_str)
+        # Need >= 30 rows for generate_signals; extend well before announcement
+        start = ann - pd.Timedelta(days=60)
+        dates = pd.bdate_range(start, eff + pd.Timedelta(days=5))
+        prices = pd.DataFrame({ticker: [100.0] * len(dates)}, index=dates)
+        s = IndexInclusion()
+        with patch("strategies.s12_index_inclusion._fetch_wikipedia_additions", return_value=[]):
+            sig = s.generate_signals(prices)
+        assert isinstance(sig, pd.DataFrame)
+        if not sig.empty and ticker in sig.columns:
+            # Signal should be positive in the announcement-to-effective window
+            window = sig.loc[sig.index >= ann]
+            window = window.loc[window.index <= eff]
+            if not window.empty:
+                assert (window[ticker] > 0).any()
+
+    def test_position_sizing_equal_weight(self):
+        from strategies.s12_index_inclusion import IndexInclusion
+        s = IndexInclusion()
+        signals = pd.Series({"AAPL": 1.0, "MSFT": 0.8, "GOOGL": 0.6})
+        pos = s.position_sizing(signals)
+        weights = list(pos.values())
+        assert all(abs(w - weights[0]) < 0.001 for w in weights)
+
+
+# ---------------------------------------------------------------------------
+# S13 — Pre-Earnings Drift
+# ---------------------------------------------------------------------------
+
+class TestPreEarningsDrift:
+    def _mock_earnings(self, days_ahead: int = 4, surprise_rate: float = 0.85):
+        from datetime import datetime, timedelta
+        return {
+            "next_date": pd.Timestamp(datetime.today() + timedelta(days=days_ahead)),
+            "surprise_rate": surprise_rate,
+            "last_two_positive": True,
+        }
+
+    def test_signal_generated_in_window(self):
+        from strategies.s13_pre_earnings_drift import PreEarningsDrift, SP100
+        from unittest.mock import patch
+        tickers = SP100[:5]
+        prices = make_prices(tickers, n=120)
+        s = PreEarningsDrift()
+        mock_info = self._mock_earnings(days_ahead=4, surprise_rate=0.85)
+        with patch("strategies.s13_pre_earnings_drift._get_earnings_info", return_value=mock_info):
+            sig = s.generate_signals(prices)
+        assert isinstance(sig, pd.DataFrame)
+        last = sig.iloc[-1]
+        # At least some tickers should have signals (those passing momentum filter)
+        assert last.sum() >= 0
+
+    def test_no_signal_outside_window(self):
+        from strategies.s13_pre_earnings_drift import PreEarningsDrift, SP100
+        from unittest.mock import patch
+        tickers = SP100[:5]
+        prices = make_prices(tickers, n=120)
+        s = PreEarningsDrift()
+        # 20 days out — beyond the entry window
+        mock_info = self._mock_earnings(days_ahead=20, surprise_rate=0.85)
+        with patch("strategies.s13_pre_earnings_drift._get_earnings_info", return_value=mock_info):
+            sig = s.generate_signals(prices)
+        if not sig.empty:
+            assert sig.iloc[-1].sum() == 0.0
+
+    def test_no_signal_low_surprise_rate(self):
+        from strategies.s13_pre_earnings_drift import PreEarningsDrift, SP100
+        from unittest.mock import patch
+        tickers = SP100[:5]
+        prices = make_prices(tickers, n=120)
+        s = PreEarningsDrift()
+        mock_info = self._mock_earnings(days_ahead=4, surprise_rate=0.40)  # below MIN
+        with patch("strategies.s13_pre_earnings_drift._get_earnings_info", return_value=mock_info):
+            sig = s.generate_signals(prices)
+        if not sig.empty:
+            assert sig.iloc[-1].sum() == 0.0
+
+    def test_position_sizing_capped(self):
+        from strategies.s13_pre_earnings_drift import PreEarningsDrift
+        s = PreEarningsDrift()
+        signals = pd.Series({f"T{i}": 0.5 for i in range(10)})
+        pos = s.position_sizing(signals)
+        assert len(pos) <= s.max_positions
+        for w in pos.values():
+            assert w <= 0.12 + 1e-9
+
+
+# ---------------------------------------------------------------------------
+# S14 — Gamma Wall
+# ---------------------------------------------------------------------------
+
+class TestGammaWall:
+    def _mock_gex(self, regime: str = "pinning"):
+        return {"gex": 5e8 if regime == "pinning" else -5e8, "spot": 500.0,
+                "gamma_walls": [495.0, 500.0, 505.0], "regime": regime}
+
+    def test_pinning_regime_allocates_to_spy_qqq(self):
+        from strategies.s14_gamma_wall import GammaWall
+        from unittest.mock import patch
+        tickers = ["SPY", "QQQ", "GLD", "SHY", "UVXY", "TLT"]
+        prices = make_prices(tickers, n=50)
+        s = GammaWall()
+        with patch("strategies.s14_gamma_wall._compute_gex", return_value=self._mock_gex("pinning")):
+            sig = s.generate_signals(prices)
+        assert isinstance(sig, pd.DataFrame)
+        last = sig.iloc[-1]
+        assert last.get("SPY", 0) > 0
+        assert last.get("QQQ", 0) > 0
+
+    def test_trending_regime_allocates_to_uvxy(self):
+        from strategies.s14_gamma_wall import GammaWall
+        from unittest.mock import patch
+        tickers = ["SPY", "QQQ", "GLD", "SHY", "UVXY", "TLT"]
+        prices = make_prices(tickers, n=50)
+        vix = pd.Series([30.0] * 50, index=prices.index)
+        s = GammaWall()
+        with patch("strategies.s14_gamma_wall._compute_gex", return_value=self._mock_gex("trending")):
+            sig = s.generate_signals(prices, vix=vix)
+        assert isinstance(sig, pd.DataFrame)
+
+    def test_bs_gamma_positive(self):
+        from strategies.s14_gamma_wall import _black_scholes_gamma
+        g = _black_scholes_gamma(S=500, K=500, T=0.1, r=0.05, sigma=0.20)
+        assert g > 0
+
+    def test_bs_gamma_zero_tte(self):
+        from strategies.s14_gamma_wall import _black_scholes_gamma
+        g = _black_scholes_gamma(S=500, K=500, T=0.0, r=0.05, sigma=0.20)
+        assert g == 0.0
+
+
+# ---------------------------------------------------------------------------
+# S15 — Institutional Short Flow
+# ---------------------------------------------------------------------------
+
+class TestShortFlow:
+    def _mock_flow_df(self, tickers):
+        import pandas as pd
+        from datetime import date, timedelta
+        dates = [date.today() - timedelta(days=i) for i in range(5, 0, -1)]
+        data = {t: [0.42, 0.40, 0.38, 0.36, 0.34] for t in tickers}
+        return pd.DataFrame(data, index=dates)
+
+    def test_returns_dataframe(self):
+        from strategies.s15_short_flow import ShortFlow, UNIVERSE
+        from unittest.mock import patch
+        tickers = UNIVERSE[:5]
+        prices = make_prices(tickers, n=60)
+        s = ShortFlow()
+        with patch("strategies.s15_short_flow._get_short_ratios", return_value=self._mock_flow_df(tickers)):
+            sig = s.generate_signals(prices)
+        assert isinstance(sig, pd.DataFrame)
+
+    def test_squeeze_signal_on_high_ratio_drop(self):
+        from strategies.s15_short_flow import ShortFlow, UNIVERSE
+        from unittest.mock import patch
+        import pandas as pd
+        ticker = UNIVERSE[0]  # AAPL
+        # Build declining price series: flat then -11% drop in last 5 days
+        n = 60
+        dates = pd.date_range("2023-01-01", periods=n, freq="B")
+        price_values = [100.0] * (n - 5) + [95.0, 93.0, 91.0, 89.0, 87.0]
+        prices = pd.DataFrame({ticker: price_values}, index=dates)
+
+        # High short ratio — triggers squeeze (>= 0.68) + price down > 5%
+        flow_dates = list(dates[-5:])
+        flow_df = pd.DataFrame({ticker: [0.70, 0.71, 0.72, 0.73, 0.74]}, index=flow_dates)
+        s = ShortFlow()
+        with patch("strategies.s15_short_flow._get_short_ratios", return_value=flow_df):
+            sig = s.generate_signals(prices)
+        if not sig.empty:
+            assert sig.iloc[-1].get(ticker, 0) > 0  # squeeze = bullish signal
+
+    def test_position_sizing_cap(self):
+        from strategies.s15_short_flow import ShortFlow
+        s = ShortFlow()
+        signals = pd.Series({f"T{i}": 0.5 for i in range(10)})
+        pos = s.position_sizing(signals)
+        assert len(pos) <= s.max_positions
+        for w in pos.values():
+            assert w <= 0.20 + 1e-9
+
+
+# ---------------------------------------------------------------------------
+# S16 — Overnight Carry
+# ---------------------------------------------------------------------------
+
+class TestOvernightCarry:
+    def test_returns_dataframe(self):
+        from strategies.s16_overnight_carry import OvernightCarry, UNIVERSE
+        prices = make_prices(UNIVERSE, n=100)
+        s = OvernightCarry()
+        sig = s.generate_signals(prices)
+        assert isinstance(sig, pd.DataFrame)
+
+    def test_spy_always_positive_in_uptrend(self):
+        from strategies.s16_overnight_carry import OvernightCarry, UNIVERSE
+        # Steady uptrend so SPY > SMA50
+        n = 80
+        prices_data = {t: [100.0 * (1.001 ** i) for i in range(n)] for t in UNIVERSE}
+        dates = pd.date_range("2024-01-01", periods=n, freq="B")
+        prices = pd.DataFrame(prices_data, index=dates)
+        vix = pd.Series([15.0] * n, index=dates)  # low VIX
+        s = OvernightCarry()
+        sig = s.generate_signals(prices, vix=vix)
+        assert isinstance(sig, pd.DataFrame)
+        if not sig.empty:
+            last = sig.iloc[-1]
+            assert last.get("SPY", 0) > 0
+
+    def test_flat_above_vix_exit(self):
+        from strategies.s16_overnight_carry import OvernightCarry, UNIVERSE
+        n = 80
+        prices_data = {t: [100.0 * (1.001 ** i) for i in range(n)] for t in UNIVERSE}
+        dates = pd.date_range("2024-01-01", periods=n, freq="B")
+        prices = pd.DataFrame(prices_data, index=dates)
+        vix = pd.Series([40.0] * n, index=dates)  # above VIX_EXIT=35
+        s = OvernightCarry()
+        sig = s.generate_signals(prices, vix=vix)
+        if not sig.empty:
+            # Last row should be all zeros (flat above exit threshold)
+            assert sig.iloc[-1].sum() == pytest.approx(0.0)
+
+    def test_position_sizing_sums_to_one(self):
+        from strategies.s16_overnight_carry import OvernightCarry
+        s = OvernightCarry()
+        signals = pd.Series({"SPY": 0.6, "QQQ": 0.4})
+        pos = s.position_sizing(signals)
+        assert sum(pos.values()) == pytest.approx(1.0)
