@@ -95,6 +95,10 @@ class PanicReversal(Strategy):
     VOL_MIN       = 0.70    # not a dead market
     VOL_MAX       = 2.50    # not panic capitulation
 
+    # Exit rules
+    STOP_LOSS     = 0.04    # cut at -4% from entry (hard stop)
+    PROFIT_TARGET = 0.03    # take profit at +3%
+
     def get_universe(self) -> list[str]:
         return SP100 + ["SPY"]   # SPY needed for market-relative calc
 
@@ -168,6 +172,43 @@ class PanicReversal(Strategy):
                 score = abs(day_ret) * (1.0 + vix_factor) * comovement_q
                 signals.at[date, ticker] = score
 
+        # ── Carry signals forward for HOLD_DAYS ──────────────────────────────
+        # A position entered on day T must stay alive on T+1 … T+HOLD_DAYS-1.
+        # We carry the original score forward, but clear it early on:
+        #   - stop-loss  : price dropped > STOP_LOSS from entry
+        #   - profit target: price rose  > PROFIT_TARGET from entry
+        # A stronger NEW signal on a later day overwrites the carry.
+        for ticker in list(signals.columns):
+            if ticker == "SPY" or ticker not in SP100:
+                continue
+            col_sig   = signals[ticker]
+            col_price = prices[ticker] if ticker in prices.columns else None
+            event_dates = col_sig[col_sig > 0].index.tolist()
+
+            for event_date in event_dates:
+                event_idx   = prices.index.get_loc(event_date)
+                entry_price = float(prices[ticker].iloc[event_idx]) if col_price is not None else 0.0
+                base_score  = float(col_sig[event_date])
+
+                for d in range(1, self.HOLD_DAYS):
+                    carry_idx = event_idx + d
+                    if carry_idx >= len(prices.index):
+                        break
+                    carry_date  = prices.index[carry_idx]
+                    carry_price = float(prices[ticker].iloc[carry_idx]) if col_price is not None else entry_price
+
+                    # Stop-loss: exit early, no carry for remaining days
+                    if entry_price > 0 and (carry_price / entry_price - 1) < -self.STOP_LOSS:
+                        break
+
+                    # Profit target: exit early
+                    if entry_price > 0 and (carry_price / entry_price - 1) > self.PROFIT_TARGET:
+                        break
+
+                    # Only carry if no stronger signal already on this day
+                    if signals.at[carry_date, ticker] < base_score:
+                        signals.at[carry_date, ticker] = base_score
+
         return signals
 
     def position_sizing(self, signals: pd.Series) -> dict[str, float]:
@@ -179,9 +220,16 @@ class PanicReversal(Strategy):
         return {t: w for t in longs.index}
 
     def exit_rules(self, entry_price: float, current_price: float, days_held: int) -> bool:
-        # From analysis: 5-day hold is optimal; also exit on +3% profit
+        """
+        Three exit conditions (mirrored in generate_signals carry logic):
+          1. Time stop  : held >= HOLD_DAYS (5 days) — exit regardless of P&L
+          2. Profit take: up >= PROFIT_TARGET (+3%)
+          3. Stop-loss  : down >= STOP_LOSS  (-4%)
+        """
         if days_held >= self.HOLD_DAYS:
             return True
-        if current_price >= entry_price * 1.03:
+        if current_price >= entry_price * (1 + self.PROFIT_TARGET):
+            return True
+        if current_price <= entry_price * (1 - self.STOP_LOSS):
             return True
         return False

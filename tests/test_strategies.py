@@ -621,6 +621,12 @@ class TestPanicReversal:
         assert s.exit_rules(entry_price=100, current_price=103.5, days_held=1)
         assert not s.exit_rules(entry_price=100, current_price=102.0, days_held=1)
 
+    def test_exit_rules_stop_loss(self):
+        from strategies.s17_panic_reversal import PanicReversal
+        s = PanicReversal()
+        assert s.exit_rules(entry_price=100, current_price=95.0, days_held=2)   # -5% > -4% stop
+        assert not s.exit_rules(entry_price=100, current_price=97.0, days_held=2)  # -3% < stop
+
     def test_position_sizing_equal_weight_capped(self):
         from strategies.s17_panic_reversal import PanicReversal
         s = PanicReversal()
@@ -629,3 +635,36 @@ class TestPanicReversal:
         assert len(pos) <= s.max_positions
         for w in pos.values():
             assert w <= 0.12 + 1e-9
+
+    def test_signal_carries_forward(self):
+        from strategies.s17_panic_reversal import PanicReversal, SP100
+        n = 70
+        dates = pd.date_range("2024-01-01", periods=n, freq="B")
+        ticker = SP100[0]
+        prices_data = {ticker: [100.0] * n, "SPY": [100.0] * n}
+        prices_data[ticker][50] = 97.5   # event: -2.5%
+        prices_data["SPY"][50]  = 97.8   # SPY -2.2% (co-movement)
+        prices = pd.DataFrame(prices_data, index=dates)
+        vix = pd.Series([28.0] * n, index=dates)
+        s = PanicReversal()
+        sig = s.generate_signals(prices, vix=vix)
+        assert isinstance(sig, pd.DataFrame)
+        if not sig.empty and ticker in sig.columns:
+            assert sig.iloc[50][ticker] > 0          # event day has signal
+            assert sig.iloc[51][ticker] > 0          # day+1 carries signal
+
+    def test_carry_cleared_by_stop_loss(self):
+        from strategies.s17_panic_reversal import PanicReversal, SP100
+        n = 70
+        dates = pd.date_range("2024-01-01", periods=n, freq="B")
+        ticker = SP100[0]
+        prices_data = {ticker: [100.0] * n, "SPY": [100.0] * n}
+        prices_data[ticker][50] = 97.5   # event: -2.5%
+        prices_data["SPY"][50]  = 97.8
+        prices_data[ticker][51] = 92.5   # day+1 craters -5% from entry -> stop
+        prices = pd.DataFrame(prices_data, index=dates)
+        vix = pd.Series([28.0] * n, index=dates)
+        s = PanicReversal()
+        sig = s.generate_signals(prices, vix=vix)
+        if not sig.empty and ticker in sig.columns and 52 < n:
+            assert sig.iloc[52][ticker] == pytest.approx(0.0)
