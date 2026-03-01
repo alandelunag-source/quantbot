@@ -1,5 +1,5 @@
 $action = New-ScheduledTaskAction `
-    -Execute "C:\Users\aland\quantbot\run_paper.bat" `
+    -Execute "C:\Users\aland\quantbot\run_daily.bat" `
     -WorkingDirectory "C:\Users\aland\quantbot"
 
 $trigger = New-ScheduledTaskTrigger `
@@ -13,11 +13,11 @@ $settings = New-ScheduledTaskSettingsSet `
     -RunOnlyIfNetworkAvailable
 
 Register-ScheduledTask `
-    -TaskName "Quantbot Daily Paper Trading" `
+    -TaskName "Quantbot Daily" `
     -Action $action `
     -Trigger $trigger `
     -Settings $settings `
-    -Description "Daily paper trading update: all 15 strategies at 4:15pm Mon-Fri" `
+    -Description "Daily paper trading update + autonomous Claude review at 4:15pm Mon-Fri" `
     -Force | Select-Object TaskName, State
 
-Write-Host "Task registered. Verify with: schtasks /Query /TN 'Quantbot Daily Paper Trading' /FO LIST"
+Write-Host "Task registered. Verify with: schtasks /Query /TN 'Quantbot Daily' /FO LIST"

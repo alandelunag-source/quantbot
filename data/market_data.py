@@ -9,6 +9,7 @@ All data returned as pandas DataFrames with DatetimeIndex.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -16,6 +17,72 @@ import pandas as pd
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
+
+_BATCH_RETRIES = 3
+_TICKER_RETRIES = 3
+
+
+def _download_single(ticker: str, kwargs: dict) -> pd.DataFrame:
+    """Download one ticker and normalize to simple (non-MultiIndex) columns."""
+    df = yf.download([ticker], **{**kwargs, "threads": False})
+    if df.empty:
+        return pd.DataFrame()
+    if isinstance(df.columns, pd.MultiIndex):
+        lvl1 = df.columns.get_level_values(1)
+        if ticker in lvl1:
+            df = df.xs(ticker, axis=1, level=1)
+        else:
+            df.columns = df.columns.droplevel(1)
+    return df
+
+
+def _batch_with_fallback(tickers: list[str], kwargs: dict) -> pd.DataFrame:
+    """
+    Try a bulk yf.download with retries. If the batch fails or returns empty,
+    fall back to per-ticker downloads so one bad ticker cannot kill the rest.
+    """
+    # --- batch attempts ---
+    for attempt in range(_BATCH_RETRIES):
+        try:
+            df = yf.download(tickers, **kwargs)
+            if not df.empty:
+                return df
+            logger.warning("yfinance batch returned empty (attempt %d/%d)", attempt + 1, _BATCH_RETRIES)
+        except Exception as exc:
+            logger.warning("yfinance batch attempt %d/%d failed: %s", attempt + 1, _BATCH_RETRIES, exc)
+        if attempt < _BATCH_RETRIES - 1:
+            time.sleep(2 ** attempt)   # 1 s, 2 s
+
+    # --- per-ticker fallback ---
+    logger.warning("Batch download failed — falling back to per-ticker for %d tickers", len(tickers))
+    frames: dict[str, pd.DataFrame] = {}
+    for ticker in tickers:
+        for attempt in range(_TICKER_RETRIES):
+            try:
+                df = _download_single(ticker, kwargs)
+                if not df.empty:
+                    frames[ticker] = df
+                    break
+            except Exception as exc:
+                logger.warning("yfinance %s attempt %d/%d: %s", ticker, attempt + 1, _TICKER_RETRIES, exc)
+            if attempt < _TICKER_RETRIES - 1:
+                time.sleep(1)
+        else:
+            logger.error("yfinance: all retries failed for %s — skipping", ticker)
+
+    if not frames:
+        return pd.DataFrame()
+    if len(frames) == 1:
+        return list(frames.values())[0]
+
+    # Rebuild MultiIndex (field, ticker) DataFrame from per-ticker simple DataFrames
+    combined: dict[tuple, pd.Series] = {}
+    for ticker, df in frames.items():
+        for col in df.columns:
+            combined[(col, ticker)] = df[col]
+    result = pd.DataFrame(combined)
+    result.columns = pd.MultiIndex.from_tuples(result.columns)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -38,20 +105,15 @@ def get_bars(
     end = end or datetime.today()
     start = end - timedelta(days=days + 30)  # extra buffer for weekends/holidays
 
-    try:
-        df = yf.download(
-            tickers,
-            start=start.strftime("%Y-%m-%d"),
-            end=end.strftime("%Y-%m-%d"),
-            interval=interval,
-            auto_adjust=True,
-            progress=False,
-            threads=True,
-        )
-    except Exception as exc:
-        logger.error("yfinance download failed: %s", exc)
-        return pd.DataFrame()
-
+    kwargs = dict(
+        start=start.strftime("%Y-%m-%d"),
+        end=end.strftime("%Y-%m-%d"),
+        interval=interval,
+        auto_adjust=True,
+        progress=False,
+        threads=True,
+    )
+    df = _batch_with_fallback(tickers, kwargs)
     if df.empty:
         logger.warning("No data returned for tickers: %s", tickers)
     return df
@@ -110,31 +172,38 @@ def get_yield_spread(days: int = 365) -> pd.Series:
 
 def get_earnings_calendar(ticker: str) -> Optional[pd.DataFrame]:
     """Return upcoming earnings dates and EPS estimates via yfinance."""
-    try:
-        t = yf.Ticker(ticker)
-        cal = t.calendar
-        if cal is None or cal.empty:
-            return None
-        return cal
-    except Exception:
-        return None
+    for attempt in range(_TICKER_RETRIES):
+        try:
+            t = yf.Ticker(ticker)
+            cal = t.calendar
+            if cal is None or cal.empty:
+                return None
+            return cal
+        except Exception as exc:
+            logger.warning("get_earnings_calendar %s attempt %d/%d: %s", ticker, attempt + 1, _TICKER_RETRIES, exc)
+            if attempt < _TICKER_RETRIES - 1:
+                time.sleep(1)
+    return None
 
 
 def get_options_chain(ticker: str, expiry: Optional[str] = None) -> dict:
     """
     Return {calls: DataFrame, puts: DataFrame} for the nearest expiry (or specified).
     """
-    try:
-        t = yf.Ticker(ticker)
-        expiries = t.options
-        if not expiries:
-            return {}
-        target = expiry or expiries[0]
-        chain = t.option_chain(target)
-        return {"calls": chain.calls, "puts": chain.puts, "expiry": target}
-    except Exception as exc:
-        logger.debug("Options chain fetch failed for %s: %s", ticker, exc)
-        return {}
+    for attempt in range(_TICKER_RETRIES):
+        try:
+            t = yf.Ticker(ticker)
+            expiries = t.options
+            if not expiries:
+                return {}
+            target = expiry or expiries[0]
+            chain = t.option_chain(target)
+            return {"calls": chain.calls, "puts": chain.puts, "expiry": target}
+        except Exception as exc:
+            logger.debug("Options chain fetch failed for %s attempt %d/%d: %s", ticker, attempt + 1, _TICKER_RETRIES, exc)
+            if attempt < _TICKER_RETRIES - 1:
+                time.sleep(1)
+    return {}
 
 
 # ---------------------------------------------------------------------------
