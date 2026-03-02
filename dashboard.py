@@ -12,6 +12,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 
 # ── Constants & config ────────────────────────────────────────────────────────
@@ -527,11 +528,67 @@ with tab_ov:
         color = C["muted"] if v > 1000 else C["orange"]   # flag low cash
         return f'<span style="color:{color};">${v:,.0f}</span>'
 
+    # Fetch current prices for all open positions (cached 5 min)
+    all_open_tickers: set[str] = set()
+    for k in filt_keys:
+        all_open_tickers.update(states.get(k, {}).get("positions", {}).keys())
+    live_prices = fetch_current_prices(tuple(sorted(all_open_tickers)))
+
+    # Build position detail rows for each strategy (used in accordion dropdown)
+    def _pos_detail_html(key: str) -> str:
+        pos = states.get(key, {}).get("positions", {})
+        if not pos:
+            return f'<span style="color:{C["muted"]};font-style:italic;">No open positions (flat / cash)</span>'
+        inner = ""
+        for ticker, p in sorted(pos.items(), key=lambda x: -x[1]["weight"]):
+            entry   = p.get("entry_price", 0)
+            shares  = p.get("shares", 0)
+            weight  = p.get("weight", 0) * 100
+            notional = entry * shares
+            edate   = p.get("entry_date", "")
+            cur     = live_prices.get(ticker)
+            if cur is not None and entry:
+                unreal_d = (cur - entry) * shares
+                unreal_p = (cur / entry - 1) * 100
+                pnl_color = C["green"] if unreal_d >= 0 else C["red"]
+                arrow = "&#9650;" if unreal_d >= 0 else "&#9660;"
+                pnl_str  = f'<span style="color:{pnl_color};font-weight:700;">{arrow} ${abs(unreal_d):,.0f} ({unreal_p:+.2f}%)</span>'
+                cur_str  = f"${cur:.2f}"
+            else:
+                pnl_str = f'<span style="color:{C["muted"]};">—</span>'
+                cur_str = "—"
+            inner += f"""
+            <tr>
+                <td style="font-weight:700;color:{C['text']}">{ticker}</td>
+                <td style="color:{C['cyan']}">{weight:.0f}%</td>
+                <td>${entry:.2f}</td>
+                <td>{cur_str}</td>
+                <td>{shares:.2f}</td>
+                <td style="color:{C['cyan']}">${notional:,.0f}</td>
+                <td>{pnl_str}</td>
+                <td style="color:{C['muted']}">{edate}</td>
+            </tr>"""
+        hdr = "".join(f'<th style="padding:5px 12px;color:{C["muted"]};font-size:10px;'
+                      f'text-transform:uppercase;letter-spacing:0.6px;">{c}</th>'
+                      for c in ["Ticker","Weight","Entry $","Current $","Shares","Notional","Unreal P&L","Entry Date"])
+        return (f'<table style="width:100%;border-collapse:collapse;font-size:12px;'
+                f'font-family:\'Courier New\',monospace;">'
+                f'<thead><tr>{hdr}</tr></thead><tbody>{inner}</tbody></table>')
+
     html_rows = ""
+    NCOLS = 12  # strategy + 10 data cols + expand arrow
     for _, row in tbl.iterrows():
+        key = filt_summary.loc[filt_summary["Strategy"] == row["Strategy"], "key"].values[0]
+        safe_key = key.replace("_", "-")
+        n_pos = int(row["Pos"])
+        arrow_color = C["cyan"] if n_pos > 0 else C["dimmed"]
+
         html_rows += f"""
-        <tr>
-            <td style="color:{C['text']};font-weight:500;">{row['Strategy']}</td>
+        <tr class="strategy-row" onclick="toggleDetail('{safe_key}')"
+            style="cursor:pointer;" title="Click to expand positions">
+            <td style="color:{C['text']};font-weight:500;">
+                <span id="arrow-{safe_key}" style="color:{arrow_color};margin-right:8px;font-size:10px;">&#9654;</span>{row['Strategy']}
+            </td>
             <td style="font-family:'Courier New',monospace;">${row['Value ($)']:,.0f}</td>
             <td style="color:{C['cyan']};font-family:'Courier New',monospace;">${row['Invested ($)']:,.0f}</td>
             <td>{fmt_cash(row['Cash ($)'])}</td>
@@ -540,33 +597,79 @@ with tab_ov:
             <td style="color:{C['muted']};">{row['SPY (%)']:+.3f}%</td>
             <td style="color:{C['red'] if row['Max DD (%)'] < 0 else C['muted']};">{row['Max DD (%)']:.3f}%</td>
             <td>{fmt_sharpe(row['Sharpe'])}</td>
-            <td style="color:{C['cyan'] if row['Pos']>0 else C['muted']};">{int(row['Pos'])}</td>
+            <td style="color:{C['cyan'] if n_pos>0 else C['muted']};">{n_pos}</td>
             <td style="color:{C['muted']};">{int(row['Trades'])}</td>
+        </tr>
+        <tr id="detail-{safe_key}" style="display:none;">
+            <td colspan="{NCOLS}" style="padding:0 14px 14px 36px;background:{C['bg']};border-bottom:1px solid {C['border']};">
+                {_pos_detail_html(key)}
+            </td>
         </tr>"""
 
     header_cols = ["Strategy","Value ($)","Invested ($)","Cash ($)","Return","Alpha","SPY","Max DD","Sharpe","Pos","Trades"]
     th = "".join(f"<th>{c}</th>" for c in header_cols)
 
-    st.markdown(f"""
+    n_rows = len(filt_summary)
+    table_height = 60 + n_rows * 44 + 20   # header + rows + hint; expands dynamically via JS
+
+    components.html(f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
     <style>
-    .perf-table {{ width:100%; border-collapse:collapse; font-size:13px; }}
-    .perf-table th {{
-        background:{C['border']}; color:{C['muted']}; padding:10px 14px;
-        text-align:left; font-size:11px; font-weight:700;
-        text-transform:uppercase; letter-spacing:0.7px;
-        border-bottom:1px solid {C['cyan']};
-    }}
-    .perf-table td {{
-        padding:9px 14px; border-bottom:1px solid {C['border']};
-        color:{C['text']}; font-size:13px; font-family:'Courier New',monospace;
-    }}
-    .perf-table tr:hover td {{ background:{C['border']}; }}
-    .perf-table tr:last-child td {{ border-bottom:none; }}
+      body {{ margin:0; padding:0; background:{C['bg']}; font-family:'Courier New',monospace; }}
+      .perf-table {{ width:100%; border-collapse:collapse; font-size:13px; }}
+      .perf-table th {{
+          background:{C['border']}; color:{C['muted']}; padding:10px 14px;
+          text-align:left; font-size:11px; font-weight:700;
+          text-transform:uppercase; letter-spacing:0.7px;
+          border-bottom:2px solid {C['cyan']};
+      }}
+      .perf-table td {{
+          padding:9px 14px; border-bottom:1px solid {C['border']};
+          color:{C['text']}; font-size:13px;
+      }}
+      .strategy-row {{ cursor:pointer; }}
+      .strategy-row:hover td {{ background:{C['border']}; }}
+      .detail-row td {{ background:{C['bg']}; padding:0 14px 14px 38px; }}
+      .pos-table {{ width:100%; border-collapse:collapse; font-size:12px; margin-top:6px; }}
+      .pos-table th {{ color:{C['muted']}; font-size:10px; text-transform:uppercase;
+                       letter-spacing:0.6px; padding:4px 10px; text-align:left;
+                       border-bottom:1px solid {C['border']}; }}
+      .pos-table td {{ padding:5px 10px; border-bottom:1px solid {C['border']}22;
+                       color:{C['text']}; }}
+      .pos-table tr:last-child td {{ border-bottom:none; }}
+      .hint {{ font-size:11px; color:{C['dimmed']}; margin-top:6px; padding-left:4px; }}
+      .arrow {{ color:{C['cyan']}; margin-right:8px; font-size:10px; display:inline-block;
+                width:10px; transition: transform 0.15s; }}
     </style>
+    </head>
+    <body>
     <div style="background:{C['card']};border:1px solid {C['border']};border-radius:10px;overflow:hidden;">
-    <table class="perf-table"><thead><tr>{th}</tr></thead><tbody>{html_rows}</tbody></table>
+    <table class="perf-table">
+      <thead><tr>{th}</tr></thead>
+      <tbody>{html_rows}</tbody>
+    </table>
     </div>
-    """, unsafe_allow_html=True)
+    <div class="hint">&#9654; Click any row to expand positions</div>
+
+    <script>
+    function toggleDetail(key) {{
+        var detail = document.getElementById('detail-' + key);
+        var arrow  = document.getElementById('arrow-' + key);
+        if (!detail) return;
+        var open = detail.style.display === 'table-row';
+        detail.style.display = open ? 'none' : 'table-row';
+        if (arrow) arrow.innerHTML = open ? '&#9654;' : '&#9660;';
+        // Notify parent iframe to resize
+        var newH = document.body.scrollHeight + 20;
+        window.parent.document.querySelectorAll('iframe').forEach(function(f) {{
+            if (f.contentWindow === window) f.style.height = newH + 'px';
+        }});
+    }}
+    </script>
+    </body></html>
+    """, height=table_height, scrolling=False)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 2: EQUITY CURVES
