@@ -44,8 +44,8 @@ class ShortTermReversal(Strategy):
     LOSS_MAX = 0.20        # But not more than 20% (avoid fundamental blowups)
     VOL_RATIO_MIN = 1.2    # Volume confirmation of selling pressure
 
-    STOP_LOSS      = 0.04   # -4%: reversal thesis failed; forced sellers still in control
-    PROFIT_TARGET  = 0.05   # +5%: take profit (reversals snap back fast, don't get greedy)
+    STOP_LOSS      = 0.05   # -5%: grid-optimised (500d, 60 OOS trades); give reversal more room
+    PROFIT_TARGET  = 0.05   # +5%: unchanged (optimal confirmed by grid)
     TIME_STOP_DAYS = 10     # 10 calendar days max (reversal edge decays after first week)
 
     def get_universe(self) -> list[str]:
@@ -100,7 +100,7 @@ class ShortTermReversal(Strategy):
     def exit_rules(self, entry_price: float, current_price: float, days_held: int) -> bool:
         """
         Exit when:
-          - Stop-loss: -4% (reversal not materializing; likely a real breakdown, not forced selling)
+          - Stop-loss: -5% (reversal not materializing; likely a real breakdown, not forced selling)
           - Profit target: +5% (reversal captured; lock in, don't ride it back down)
           - Time stop: 10 days (outside the Jegadeesh 1-week window, signal is stale)
         """

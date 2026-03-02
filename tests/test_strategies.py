@@ -628,8 +628,8 @@ class TestPanicReversal:
     def test_exit_rules_stop_loss(self):
         from strategies.s17_panic_reversal import PanicReversal
         s = PanicReversal()
-        assert s.exit_rules(entry_price=100, current_price=95.0, days_held=2)   # -5% > -4% stop
-        assert not s.exit_rules(entry_price=100, current_price=97.0, days_held=2)  # -3% < stop
+        assert s.exit_rules(entry_price=100, current_price=95.0, days_held=2)   # -5% hits -3% stop
+        assert not s.exit_rules(entry_price=100, current_price=97.5, days_held=2)  # -2.5% < -3% stop
 
     def test_position_sizing_equal_weight_capped(self):
         from strategies.s17_panic_reversal import PanicReversal
@@ -648,6 +648,7 @@ class TestPanicReversal:
         prices_data = {ticker: [100.0] * n, "SPY": [100.0] * n}
         prices_data[ticker][50] = 97.5   # event: -2.5%
         prices_data["SPY"][50]  = 97.8   # SPY -2.2% (co-movement)
+        prices_data[ticker][51] = 99.0   # day+1: +1.5% from entry, below +2.5% PT -> carry lives
         prices = pd.DataFrame(prices_data, index=dates)
         vix = pd.Series([28.0] * n, index=dates)
         s = PanicReversal()

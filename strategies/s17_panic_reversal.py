@@ -95,9 +95,9 @@ class PanicReversal(Strategy):
     VOL_MIN       = 0.70    # not a dead market
     VOL_MAX       = 2.50    # not panic capitulation
 
-    # Exit rules
-    STOP_LOSS     = 0.04    # cut at -4% from entry (hard stop)
-    PROFIT_TARGET = 0.03    # take profit at +3%
+    # Exit rules (grid-optimised: stop_loss_grid.py, 500d, 222 OOS trades)
+    STOP_LOSS     = 0.03    # cut at -3% from entry (hard stop)
+    PROFIT_TARGET = 0.025   # take profit at +2.5%
 
     def get_universe(self) -> list[str]:
         return SP100 + ["SPY"]   # SPY needed for market-relative calc
@@ -222,8 +222,8 @@ class PanicReversal(Strategy):
         """
         Three exit conditions (mirrored in generate_signals carry logic):
           1. Time stop  : held >= HOLD_DAYS (5 days) — exit regardless of P&L
-          2. Profit take: up >= PROFIT_TARGET (+3%)
-          3. Stop-loss  : down >= STOP_LOSS  (-4%)
+          2. Profit take: up >= PROFIT_TARGET (+2.5%)
+          3. Stop-loss  : down >= STOP_LOSS  (-3%)
         """
         if days_held >= self.HOLD_DAYS:
             return True
