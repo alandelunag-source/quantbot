@@ -236,6 +236,23 @@ def load_states() -> dict[str, dict]:
     return out
 
 
+@st.cache_data(ttl=300)
+def fetch_current_prices(tickers: tuple) -> dict[str, float]:
+    """Fetch latest close price for a set of tickers."""
+    if not tickers:
+        return {}
+    try:
+        raw = yf.download(list(tickers), period="5d", auto_adjust=True, progress=False)
+        closes = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw[["Close"]]
+        closes = closes.dropna(how="all")
+        if closes.empty:
+            return {}
+        last = closes.iloc[-1]
+        return {t: float(last[t]) for t in tickers if t in last.index and not pd.isna(last[t])}
+    except Exception:
+        return {}
+
+
 @st.cache_data(ttl=3600)
 def fetch_spy(start: str, end: str) -> pd.Series:
     try:
@@ -857,27 +874,108 @@ with tab_pos:
 # TAB 5: TRADES
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_trades:
+    # Collect all trades and tag open/closed by cross-referencing positions
     all_trades = []
+    open_tickers: set[str] = set()
     for k in filt_keys:
+        open_pos = states[k].get("positions", {})
+        open_tickers.update(open_pos.keys())
         for t in states[k].get("trades", []):
+            ticker  = t.get("ticker", "")
+            action  = t.get("action", "")
+            is_open = (action == "BUY") and (ticker in open_pos)
+            entry_p = open_pos[ticker]["entry_price"] if is_open else t.get("price", 0)
+            shares  = open_pos[ticker]["shares"]      if is_open else 0
             all_trades.append({
-                "Strategy": SHORT.get(k, k),
-                "Date":     t.get("date",""),
-                "Ticker":   t.get("ticker",""),
-                "Action":   t.get("action",""),
-                "$ Value":  t.get("dollar_value", 0),
-                "Cost $":   t.get("cost", 0),
+                "_key":       k,
+                "Strategy":   SHORT.get(k, k),
+                "Date":       t.get("date", ""),
+                "Ticker":     ticker,
+                "Action":     action,
+                "Entry $":    entry_p,
+                "Shares":     shares,
+                "Cost $":     t.get("cost", 0),
+                "Notional":   t.get("dollar_value", 0),
+                "Status":     "OPEN" if is_open else "CLOSED",
+                # placeholders filled after price fetch
+                "Current $":  None,
+                "Unreal $":   None,
+                "Unreal %":   None,
+                "Days Held":  None,
             })
 
     if not all_trades:
         st.info("No trades recorded yet.")
     else:
-        td = pd.DataFrame(all_trades).sort_values(["Date","Strategy"], ascending=[False,True])
+        # Fetch current prices for all open tickers (cached 5 min)
+        prices = fetch_current_prices(tuple(sorted(open_tickers)))
+        today  = datetime.today().date()
 
+        for row in all_trades:
+            try:
+                entry_dt  = datetime.strptime(row["Date"], "%Y-%m-%d").date()
+                row["Days Held"] = (today - entry_dt).days
+            except Exception:
+                row["Days Held"] = "—"
+
+            if row["Status"] == "OPEN" and row["Ticker"] in prices:
+                cur = prices[row["Ticker"]]
+                unreal_d = (cur - row["Entry $"]) * row["Shares"]
+                unreal_p = (cur / row["Entry $"] - 1) * 100 if row["Entry $"] else 0
+                row["Current $"] = cur
+                row["Unreal $"]  = unreal_d
+                row["Unreal %"]  = unreal_p
+
+        td = pd.DataFrame(all_trades).sort_values(["Date", "Strategy"], ascending=[False, True])
+
+        # ── KPI row ──────────────────────────────────────────────────────────
+        open_td   = td[td["Status"] == "OPEN"]
+        closed_td = td[td["Status"] == "CLOSED"]
+        total_unreal = open_td["Unreal $"].dropna().sum()
+        n_winners = (open_td["Unreal $"].dropna() > 0).sum()
+        n_losers  = (open_td["Unreal $"].dropna() < 0).sum()
+
+        ka, kb, kc, kd = st.columns(4)
+        with ka:
+            st.markdown(card("Open Trades", str(len(open_td)), None, 0), unsafe_allow_html=True)
+        with kb:
+            st.markdown(card("Closed Trades", str(len(closed_td)), None, 0), unsafe_allow_html=True)
+        with kc:
+            sign = 1 if total_unreal > 0 else (-1 if total_unreal < 0 else 0)
+            st.markdown(card("Total Unrealized P&L",
+                             f"{'▲' if total_unreal>0 else '▼'} ${abs(total_unreal):,.0f}",
+                             None, sign), unsafe_allow_html=True)
+        with kd:
+            st.markdown(card("Winners / Losers", f"{n_winners}W  {n_losers}L", None, 0),
+                        unsafe_allow_html=True)
+
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+        # ── Charts ───────────────────────────────────────────────────────────
         col_tv, col_by = st.columns(2)
         with col_tv:
+            st.markdown('<div class="section-hdr">Unrealized P&L by Strategy</div>',
+                        unsafe_allow_html=True)
+            pnl_by_strat = (open_td.groupby("Strategy")["Unreal $"]
+                            .sum().sort_values(ascending=True).dropna())
+            if not pnl_by_strat.empty:
+                pnl_colors = [C["green"] if v >= 0 else C["red"] for v in pnl_by_strat]
+                fig_pnl = go.Figure(go.Bar(
+                    x=pnl_by_strat.values, y=pnl_by_strat.index, orientation="h",
+                    marker=dict(color=pnl_colors, opacity=0.85, line=dict(width=0)),
+                    text=[f"${v:+,.0f}" for v in pnl_by_strat.values],
+                    textposition="outside",
+                    textfont=dict(size=10, color=C["text"]),
+                ))
+                apply_layout(fig_pnl, height=350, margin=dict(l=0, r=70, t=10, b=0),
+                             yaxis=dict(gridcolor="rgba(0,0,0,0)", tickfont=dict(size=10)),
+                             xaxis=dict(tickfont=dict(size=10)))
+                fig_pnl.add_vline(x=0, line_color=C["border"], line_width=1)
+                st.plotly_chart(fig_pnl, use_container_width=True)
+
+        with col_by:
             st.markdown('<div class="section-hdr">Volume by Strategy</div>', unsafe_allow_html=True)
-            tvol = td.groupby("Strategy")["$ Value"].sum().sort_values(ascending=True)
+            tvol = td.groupby("Strategy")["Notional"].sum().sort_values(ascending=True)
             fig_tv = go.Figure(go.Bar(
                 x=tvol.values, y=tvol.index, orientation="h",
                 marker=dict(color=C["purple"], opacity=0.85, line=dict(width=0)),
@@ -885,44 +983,45 @@ with tab_trades:
                 textposition="outside",
                 textfont=dict(size=10, color=C["muted"]),
             ))
-            apply_layout(fig_tv, height=350, margin=dict(l=0,r=60,t=10,b=0),
+            apply_layout(fig_tv, height=350, margin=dict(l=0, r=70, t=10, b=0),
                          yaxis=dict(gridcolor="rgba(0,0,0,0)", tickfont=dict(size=10)),
                          xaxis=dict(tickfont=dict(size=10)))
             st.plotly_chart(fig_tv, use_container_width=True)
 
-        with col_by:
-            st.markdown('<div class="section-hdr">Buy vs Sell Count</div>', unsafe_allow_html=True)
-            action_ct = td.groupby(["Strategy","Action"]).size().unstack(fill_value=0)
-            fig_bs = go.Figure()
-            if "BUY" in action_ct.columns:
-                fig_bs.add_trace(go.Bar(name="BUY", x=action_ct.index,
-                                        y=action_ct["BUY"], marker_color=C["green"]))
-            if "SELL" in action_ct.columns:
-                fig_bs.add_trace(go.Bar(name="SELL", x=action_ct.index,
-                                        y=action_ct["SELL"], marker_color=C["red"]))
-            fig_bs.update_layout(barmode="group")
-            apply_layout(fig_bs, height=350, margin=dict(l=0,r=0,t=10,b=0),
-                         yaxis_title="Count",
-                         xaxis=dict(tickangle=-30, tickfont=dict(size=10)),
-                         legend=dict(orientation="h", y=1.1))
-            st.plotly_chart(fig_bs, use_container_width=True)
-
-        # Trades table
+        # ── Trade log table ───────────────────────────────────────────────────
         st.markdown('<div class="section-hdr">Trade Log</div>', unsafe_allow_html=True)
         trade_rows = ""
         for _, row in td.iterrows():
-            act_color = C["green"] if row["Action"]=="BUY" else C["red"]
+            act_color    = C["green"] if row["Action"] == "BUY" else C["red"]
+            status_cls   = "pill-green" if row["Status"] == "OPEN" else "pill-cyan"
+            cur_str      = f"${row['Current $']:.2f}" if row["Current $"] is not None else "—"
+            days_str     = str(row["Days Held"]) if row["Days Held"] is not None else "—"
+
+            if row["Unreal $"] is not None:
+                sign_u = 1 if row["Unreal $"] > 0 else -1
+                unreal_color = C["green"] if sign_u > 0 else C["red"]
+                unreal_str = f'<span style="color:{unreal_color};font-weight:700;">' \
+                             f'{"▲" if sign_u>0 else "▼"} ${abs(row["Unreal $"]):,.0f}' \
+                             f' ({row["Unreal %"]:+.2f}%)</span>'
+            else:
+                unreal_str = f'<span style="color:{C["muted"]};">—</span>'
+
             trade_rows += f"""
             <tr>
                 <td style="color:{C['cyan']};">{row['Strategy']}</td>
                 <td style="color:{C['muted']};">{row['Date']}</td>
                 <td style="font-weight:700;">{row['Ticker']}</td>
                 <td style="color:{act_color};font-weight:700;">{row['Action']}</td>
-                <td>${row['$ Value']:,.0f}</td>
-                <td style="color:{C['muted']};">${row['Cost $']:.2f}</td>
+                <td>${row['Entry $']:.2f}</td>
+                <td style="color:{C['muted']};">{cur_str}</td>
+                <td>{unreal_str}</td>
+                <td style="color:{C['muted']};">{days_str}d</td>
+                <td><span class="pill {status_cls}">{row['Status']}</span></td>
             </tr>"""
+
         tr_th = "".join(f"<th>{c}</th>" for c in
-                        ["Strategy","Date","Ticker","Action","$ Value","Cost"])
+                        ["Strategy", "Entry Date", "Ticker", "Action",
+                         "Entry $", "Current $", "Unrealized P&L", "Held", "Status"])
         st.markdown(f"""
         <div style="background:{C['card']};border:1px solid {C['border']};border-radius:10px;overflow:hidden;">
         <table class="perf-table"><thead><tr>{tr_th}</tr></thead><tbody>{trade_rows}</tbody></table>
