@@ -977,79 +977,140 @@ with tab_pos:
 # TAB 5: TRADES
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_trades:
-    # Collect all trades and tag open/closed by cross-referencing positions
-    all_trades = []
-    open_tickers: set[str] = set()
-    for k in filt_keys:
-        open_pos = states[k].get("positions", {})
-        open_tickers.update(open_pos.keys())
-        for t in states[k].get("trades", []):
-            ticker  = t.get("ticker", "")
-            action  = t.get("action", "")
-            is_open = (action == "BUY") and (ticker in open_pos)
-            entry_p = open_pos[ticker]["entry_price"] if is_open else t.get("price", 0)
-            shares  = open_pos[ticker]["shares"]      if is_open else 0
-            all_trades.append({
-                "_key":       k,
-                "Strategy":   SHORT.get(k, k),
-                "Date":       t.get("date", ""),
-                "Ticker":     ticker,
-                "Action":     action,
-                "Entry $":    entry_p,
-                "Shares":     shares,
-                "Cost $":     t.get("cost", 0),
-                "Notional":   t.get("dollar_value", 0),
-                "Status":     "OPEN" if is_open else "CLOSED",
-                # placeholders filled after price fetch
-                "Current $":  None,
-                "Unreal $":   None,
-                "Unreal %":   None,
-                "Days Held":  None,
-            })
+    # Build position lifecycle records: pair each BUY with its matching SELL
+    # (FIFO within each strategy × ticker) so closed positions show realized P&L
+    # and open positions show unrealized P&L.  Raw BUY/SELL rows are never shown
+    # directly — that was the source of $0.00 entries and NaN columns.
+    pos_records: list[dict] = []
 
-    if not all_trades:
+    for k in filt_keys:
+        open_pos   = states[k].get("positions", {})
+        raw_trades = states[k].get("trades", [])
+        label      = SHORT.get(k, k)
+
+        lots: dict[str, list] = {}   # ticker -> FIFO queue of open lots
+
+        for t in raw_trades:
+            ticker   = t.get("ticker", "")
+            action   = t.get("action", "")
+            notional = t.get("dollar_value", 0.0)
+            cost     = t.get("cost", 0.0)
+            date     = t.get("date", "")
+
+            if action == "BUY":
+                lots.setdefault(ticker, []).append({
+                    "entry_date":     date,
+                    "entry_notional": notional,
+                    "entry_cost":     cost,
+                })
+
+            elif action == "SELL" and ticker in lots and lots[ticker]:
+                lot = lots[ticker].pop(0)   # FIFO
+                realized_pnl = notional - lot["entry_notional"] - lot["entry_cost"] - cost
+                realized_pct = ((notional / lot["entry_notional"]) - 1) * 100 \
+                               if lot["entry_notional"] else 0.0
+                try:
+                    days = (pd.Timestamp(date) - pd.Timestamp(lot["entry_date"])).days
+                except Exception:
+                    days = None
+                pos_records.append({
+                    "_key":        k,
+                    "Strategy":    label,
+                    "Entry Date":  lot["entry_date"],
+                    "Exit Date":   date,
+                    "Ticker":      ticker,
+                    "Invested":    lot["entry_notional"],
+                    "Proceeds":    notional,
+                    "Real $":      realized_pnl,
+                    "Real %":      realized_pct,
+                    "Status":      "CLOSED",
+                    "Days":        days,
+                    "Entry Price": None,
+                    "Cur Price":   None,
+                    "Shares":      None,
+                    "Unreal $":    None,
+                    "Unreal %":    None,
+                })
+                if not lots[ticker]:
+                    del lots[ticker]
+
+        # Remaining unmatched lots are currently open positions
+        for ticker, lot_list in lots.items():
+            pos = open_pos.get(ticker, {})
+            for lot in lot_list:
+                entry_date = pos.get("entry_date", lot["entry_date"])
+                try:
+                    days = (datetime.today().date() - pd.Timestamp(entry_date).date()).days
+                except Exception:
+                    days = None
+                pos_records.append({
+                    "_key":        k,
+                    "Strategy":    label,
+                    "Entry Date":  entry_date,
+                    "Exit Date":   None,
+                    "Ticker":      ticker,
+                    "Invested":    lot["entry_notional"],
+                    "Proceeds":    None,
+                    "Real $":      None,
+                    "Real %":      None,
+                    "Status":      "OPEN",
+                    "Days":        days,
+                    "Entry Price": pos.get("entry_price"),
+                    "Cur Price":   None,
+                    "Shares":      pos.get("shares"),
+                    "Unreal $":    None,
+                    "Unreal %":    None,
+                })
+
+    if not pos_records:
         st.info("No trades recorded yet.")
     else:
-        # Fetch current prices for all open tickers (cached 5 min)
-        prices = fetch_current_prices(tuple(sorted(open_tickers)))
-        today  = datetime.today().date()
+        # Fetch live prices for open positions only
+        open_tickers_set = {r["Ticker"] for r in pos_records if r["Status"] == "OPEN"}
+        prices = fetch_current_prices(tuple(sorted(open_tickers_set)))
 
-        for row in all_trades:
-            try:
-                entry_dt  = datetime.strptime(row["Date"], "%Y-%m-%d").date()
-                row["Days Held"] = (today - entry_dt).days
-            except Exception:
-                row["Days Held"] = "—"
+        for r in pos_records:
+            if r["Status"] != "OPEN":
+                continue
+            ep     = r["Entry Price"]
+            shares = r["Shares"]
+            cur    = prices.get(r["Ticker"])
+            if cur and ep and shares:
+                r["Cur Price"] = cur
+                r["Unreal $"]  = (cur - ep) * shares
+                r["Unreal %"]  = (cur / ep - 1) * 100
 
-            if row["Status"] == "OPEN" and row["Ticker"] in prices:
-                cur = prices[row["Ticker"]]
-                unreal_d = (cur - row["Entry $"]) * row["Shares"]
-                unreal_p = (cur / row["Entry $"] - 1) * 100 if row["Entry $"] else 0
-                row["Current $"] = cur
-                row["Unreal $"]  = unreal_d
-                row["Unreal %"]  = unreal_p
+        # Sort: OPEN first (entry date desc), then CLOSED (exit date desc)
+        td = pd.DataFrame(pos_records)
+        td["_sort_date"] = td["Exit Date"].fillna(td["Entry Date"])
+        td = td.sort_values(["Status", "_sort_date"], ascending=[True, False]).drop(columns="_sort_date")
 
-        td = pd.DataFrame(all_trades).sort_values(["Date", "Strategy"], ascending=[False, True])
-
-        # ── KPI row ──────────────────────────────────────────────────────────
         open_td   = td[td["Status"] == "OPEN"]
         closed_td = td[td["Status"] == "CLOSED"]
-        total_unreal = open_td["Unreal $"].dropna().sum()
-        n_winners = (open_td["Unreal $"].dropna() > 0).sum()
-        n_losers  = (open_td["Unreal $"].dropna() < 0).sum()
+
+        # ── KPI row ──────────────────────────────────────────────────────────
+        total_unreal   = open_td["Unreal $"].dropna().sum()
+        total_realized = closed_td["Real $"].dropna().sum()
+        n_wins  = int((closed_td["Real $"].dropna() > 0).sum())
+        n_loss  = int((closed_td["Real $"].dropna() < 0).sum())
 
         ka, kb, kc, kd = st.columns(4)
         with ka:
-            st.markdown(card("Open Trades", str(len(open_td)), None, 0), unsafe_allow_html=True)
+            st.markdown(card("Open Positions", str(len(open_td)), None, 0),
+                        unsafe_allow_html=True)
         with kb:
-            st.markdown(card("Closed Trades", str(len(closed_td)), None, 0), unsafe_allow_html=True)
-        with kc:
             sign = 1 if total_unreal > 0 else (-1 if total_unreal < 0 else 0)
-            st.markdown(card("Total Unrealized P&L",
-                             f"{'▲' if total_unreal>0 else '▼'} ${abs(total_unreal):,.0f}",
+            st.markdown(card("Unrealized P&L",
+                             f"{'▲' if total_unreal>=0 else '▼'} ${abs(total_unreal):,.0f}",
+                             None, sign), unsafe_allow_html=True)
+        with kc:
+            sign = 1 if total_realized > 0 else (-1 if total_realized < 0 else 0)
+            st.markdown(card("Realized P&L",
+                             f"{'▲' if total_realized>=0 else '▼'} ${abs(total_realized):,.0f}",
                              None, sign), unsafe_allow_html=True)
         with kd:
-            st.markdown(card("Winners / Losers", f"{n_winners}W  {n_losers}L", None, 0),
+            wl_sign = 1 if n_wins > n_loss else (-1 if n_loss > n_wins else 0)
+            st.markdown(card("Closed W / L", f"{n_wins}W  {n_loss}L", None, wl_sign),
                         unsafe_allow_html=True)
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
@@ -1067,64 +1128,102 @@ with tab_trades:
                     x=pnl_by_strat.values, y=pnl_by_strat.index, orientation="h",
                     marker=dict(color=pnl_colors, opacity=0.85, line=dict(width=0)),
                     text=[f"${v:+,.0f}" for v in pnl_by_strat.values],
-                    textposition="outside",
-                    textfont=dict(size=10, color=C["text"]),
+                    textposition="outside", textfont=dict(size=10, color=C["text"]),
                 ))
                 apply_layout(fig_pnl, height=350, margin=dict(l=0, r=70, t=10, b=0),
                              yaxis=dict(gridcolor="rgba(0,0,0,0)", tickfont=dict(size=10)),
                              xaxis=dict(tickfont=dict(size=10)))
                 fig_pnl.add_vline(x=0, line_color=C["border"], line_width=1)
                 st.plotly_chart(fig_pnl, use_container_width=True)
+            else:
+                st.caption("No open positions with price data.")
 
         with col_by:
-            st.markdown('<div class="section-hdr">Volume by Strategy</div>', unsafe_allow_html=True)
-            tvol = td.groupby("Strategy")["Notional"].sum().sort_values(ascending=True)
-            fig_tv = go.Figure(go.Bar(
-                x=tvol.values, y=tvol.index, orientation="h",
-                marker=dict(color=C["purple"], opacity=0.85, line=dict(width=0)),
-                text=[f"${v:,.0f}" for v in tvol.values],
-                textposition="outside",
-                textfont=dict(size=10, color=C["muted"]),
-            ))
-            apply_layout(fig_tv, height=350, margin=dict(l=0, r=70, t=10, b=0),
-                         yaxis=dict(gridcolor="rgba(0,0,0,0)", tickfont=dict(size=10)),
-                         xaxis=dict(tickfont=dict(size=10)))
-            st.plotly_chart(fig_tv, use_container_width=True)
+            st.markdown('<div class="section-hdr">Realized P&L by Strategy</div>',
+                        unsafe_allow_html=True)
+            real_by_strat = (closed_td.groupby("Strategy")["Real $"]
+                             .sum().sort_values(ascending=True).dropna())
+            if not real_by_strat.empty:
+                real_colors = [C["green"] if v >= 0 else C["red"] for v in real_by_strat]
+                fig_real = go.Figure(go.Bar(
+                    x=real_by_strat.values, y=real_by_strat.index, orientation="h",
+                    marker=dict(color=real_colors, opacity=0.85, line=dict(width=0)),
+                    text=[f"${v:+,.0f}" for v in real_by_strat.values],
+                    textposition="outside", textfont=dict(size=10, color=C["text"]),
+                ))
+                apply_layout(fig_real, height=350, margin=dict(l=0, r=70, t=10, b=0),
+                             yaxis=dict(gridcolor="rgba(0,0,0,0)", tickfont=dict(size=10)),
+                             xaxis=dict(tickfont=dict(size=10)))
+                fig_real.add_vline(x=0, line_color=C["border"], line_width=1)
+                st.plotly_chart(fig_real, use_container_width=True)
+            else:
+                st.caption("No closed positions yet.")
 
-        # ── Trade log table ───────────────────────────────────────────────────
-        st.markdown('<div class="section-hdr">Trade Log</div>', unsafe_allow_html=True)
+        # ── Position log table ────────────────────────────────────────────────
+        st.markdown('<div class="section-hdr">Position Log</div>', unsafe_allow_html=True)
         trade_rows = ""
         for _, row in td.iterrows():
-            act_color    = C["green"] if row["Action"] == "BUY" else C["red"]
-            status_cls   = "pill-green" if row["Status"] == "OPEN" else "pill-cyan"
-            cur_str      = f"${row['Current $']:.2f}" if row["Current $"] is not None else "—"
-            days_str     = str(row["Days Held"]) if row["Days Held"] is not None else "—"
+            status     = row["Status"]
+            days_str   = f"{int(row['Days'])}d" if pd.notna(row["Days"]) else "—"
 
-            if row["Unreal $"] is not None:
-                sign_u = 1 if row["Unreal $"] > 0 else -1
-                unreal_color = C["green"] if sign_u > 0 else C["red"]
-                unreal_str = f'<span style="color:{unreal_color};font-weight:700;">' \
-                             f'{"▲" if sign_u>0 else "▼"} ${abs(row["Unreal $"]):,.0f}' \
-                             f' ({row["Unreal %"]:+.2f}%)</span>'
-            else:
-                unreal_str = f'<span style="color:{C["muted"]};">—</span>'
+            if status == "OPEN":
+                ep  = row["Entry Price"]
+                cur = row["Cur Price"]
+                ep_str  = f"${ep:.2f}"  if pd.notna(ep)  else "—"
+                cur_str = f"${cur:.2f}" if pd.notna(cur) else "mkt closed"
+                date_str = row["Entry Date"]
+
+                if pd.notna(row["Unreal $"]):
+                    sign_u   = 1 if row["Unreal $"] >= 0 else -1
+                    uc       = C["green"] if sign_u > 0 else C["red"]
+                    arrow    = "▲" if sign_u > 0 else "▼"
+                    pnl_str  = (f'<span style="color:{uc};font-weight:700;">'
+                                f'{arrow} ${abs(row["Unreal $"]):,.0f}'
+                                f' ({row["Unreal %"]:+.2f}%)</span>')
+                else:
+                    pnl_str = f'<span style="color:{C["muted"]};">mkt closed</span>'
+
+                detail_str = f"{ep_str} &rarr; {cur_str}"
+                status_html = f'<span class="pill pill-green">OPEN</span>'
+
+            else:  # CLOSED
+                inv  = row["Invested"]
+                proc = row["Proceeds"]
+                inv_str  = f"${inv:,.0f}"  if pd.notna(inv)  else "—"
+                proc_str = f"${proc:,.0f}" if pd.notna(proc) else "—"
+                detail_str = f"{inv_str} &rarr; {proc_str}"
+
+                exit_dt  = row["Exit Date"] if pd.notna(row["Exit Date"]) else "?"
+                date_str = f'{row["Entry Date"]} &rarr; {exit_dt}'
+
+                if pd.notna(row["Real $"]):
+                    sign_r  = 1 if row["Real $"] >= 0 else -1
+                    rc      = C["green"] if sign_r > 0 else C["red"]
+                    arrow   = "▲" if sign_r > 0 else "▼"
+                    outcome = "PROFIT" if sign_r > 0 else "LOSS"
+                    pnl_str = (f'<span style="color:{rc};font-weight:700;">'
+                               f'{arrow} ${abs(row["Real $"]):,.0f}'
+                               f' ({row["Real %"]:+.2f}%)</span>')
+                    pill_cls = "pill-green" if sign_r > 0 else "pill-red"
+                    status_html = f'<span class="pill {pill_cls}">{outcome}</span>'
+                else:
+                    pnl_str     = f'<span style="color:{C["muted"]};">—</span>'
+                    status_html = f'<span class="pill pill-cyan">CLOSED</span>'
 
             trade_rows += f"""
             <tr>
                 <td style="color:{C['cyan']};">{row['Strategy']}</td>
-                <td style="color:{C['muted']};">{row['Date']}</td>
+                <td style="color:{C['muted']};">{date_str}</td>
                 <td style="font-weight:700;">{row['Ticker']}</td>
-                <td style="color:{act_color};font-weight:700;">{row['Action']}</td>
-                <td>${row['Entry $']:.2f}</td>
-                <td style="color:{C['muted']};">{cur_str}</td>
-                <td>{unreal_str}</td>
-                <td style="color:{C['muted']};">{days_str}d</td>
-                <td><span class="pill {status_cls}">{row['Status']}</span></td>
+                <td style="color:{C['muted']};">{detail_str}</td>
+                <td>{pnl_str}</td>
+                <td style="color:{C['muted']};">{days_str}</td>
+                <td>{status_html}</td>
             </tr>"""
 
         tr_th = "".join(f"<th>{c}</th>" for c in
-                        ["Strategy", "Entry Date", "Ticker", "Action",
-                         "Entry $", "Current $", "Unrealized P&L", "Held", "Status"])
+                        ["Strategy", "Date", "Ticker", "Entry -> Exit",
+                         "P&L", "Held", "Status"])
         st.markdown(f"""
         <div style="background:{C['card']};border:1px solid {C['border']};border-radius:10px;overflow:hidden;">
         <table class="perf-table"><thead><tr>{tr_th}</tr></thead><tbody>{trade_rows}</tbody></table>
