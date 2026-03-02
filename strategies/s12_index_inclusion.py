@@ -106,9 +106,13 @@ def _fetch_wikipedia_additions(days_back: int = 90) -> list[dict]:
 class IndexInclusion(Strategy):
     name = "s12_index_inclusion"
     rebalance_freq = "daily"
-    max_positions = 8
-    HOLD_DAYS = 12        # days to hold after announcement
-    PRE_ANNOUNCE_DAYS = 5 # days before effective date = announcement window
+    max_positions     = 8
+    HOLD_DAYS         = 12   # days to hold after announcement
+    PRE_ANNOUNCE_DAYS = 5    # days before effective date = announcement window
+
+    STOP_LOSS      = 0.03    # -3%: if stock drops after announcement, index buyers may not show up
+    PROFIT_TARGET  = 0.05    # +5%: front-running index rebalance — lock in before passive flow arrives
+    TIME_STOP_DAYS = 30      # 30-day safety net if signal doesn't naturally expire
 
     def get_universe(self) -> list[str]:
         tickers = list({t for t, _, _ in KNOWN_ADDITIONS})
@@ -176,9 +180,19 @@ class IndexInclusion(Strategy):
 
         return signals
 
-    def position_sizing(self, signals: pd.Series) -> dict[str, float]:
+    def position_sizing(self, signals: pd.Series, prices: pd.DataFrame = None) -> dict[str, float]:
+        """Signal-weighted: higher score (closer to effective date) gets more capital. 70% deployed, 15% cap."""
         longs = signals[signals > 0].nlargest(self.max_positions)
         if longs.empty:
             return {}
-        w = round(1.0 / len(longs), 3)
-        return {t: w for t in longs.index}
+        return self._sized_weights(longs, prices=prices, max_deploy=0.70, max_weight=0.15)
+
+    def exit_rules(self, entry_price: float, current_price: float, days_held: int) -> bool:
+        """
+        Exit when:
+          - Stop-loss: -3% (announcement cancelled or market doesn't believe it; cut quickly)
+          - Profit target: +5% (front-running complete; passive flow already priced in)
+          - Time stop: 30 days (event window over; no reason to hold beyond effective date)
+        """
+        ret = (current_price - entry_price) / entry_price
+        return ret <= -self.STOP_LOSS or ret >= self.PROFIT_TARGET or days_held >= self.TIME_STOP_DAYS

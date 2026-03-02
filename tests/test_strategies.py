@@ -113,9 +113,9 @@ class TestCrossAssetMomentum:
         signals = pd.Series({"SPY": 0.5, "QQQ": 0.4, "GLD": 0.3, "TLT": 0.2, "IWM": 0.1})
         pos = s.position_sizing(signals)
         assert len(pos) <= 3
-        weights = list(pos.values())
-        # Equal weight
-        assert all(abs(w - weights[0]) < 0.001 for w in weights)
+        # Signal-weighted: higher signal gets more capital; total <= 95%
+        assert sum(pos.values()) <= 0.96
+        assert all(0 < w <= 0.50 + 1e-9 for w in pos.values())
 
 
 # ---------------------------------------------------------------------------
@@ -329,13 +329,17 @@ class TestIndexInclusion:
             if not window.empty:
                 assert (window[ticker] > 0).any()
 
-    def test_position_sizing_equal_weight(self):
+    def test_position_sizing_signal_weighted(self):
         from strategies.s12_index_inclusion import IndexInclusion
         s = IndexInclusion()
-        signals = pd.Series({"AAPL": 1.0, "MSFT": 0.8, "GOOGL": 0.6})
+        # 7 positions so none hit the 15% cap — signal-weighting is visible
+        signals = pd.Series({f"T{i}": float(10 - i) for i in range(7)})
         pos = s.position_sizing(signals)
-        weights = list(pos.values())
-        assert all(abs(w - weights[0]) < 0.001 for w in weights)
+        weights = sorted(pos.values(), reverse=True)
+        # Signal-weighted: weights are strictly descending (higher signal → more capital)
+        assert all(weights[i] > weights[i + 1] for i in range(len(weights) - 1))
+        assert sum(pos.values()) <= 0.71
+        assert all(0 < w <= 0.15 + 1e-9 for w in pos.values())
 
 
 # ---------------------------------------------------------------------------

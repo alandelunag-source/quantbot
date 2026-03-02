@@ -119,6 +119,10 @@ class ShortFlow(Strategy):
     SQUEEZE_RATIO  = 0.68   # extreme short + drop -> long contrarian
     BULLISH_RATIO  = 0.38   # low short flow + momentum -> confirm long
 
+    STOP_LOSS      = 0.06   # -6%: short covering not materializing; shorts may be right
+    PROFIT_TARGET  = 0.12   # +12%: short squeeze can be violent; take profits before unwind ends
+    TIME_STOP_DAYS = 30     # 30-day max (squeeze events resolve within a month)
+
     def get_universe(self) -> list[str]:
         return UNIVERSE
 
@@ -184,10 +188,19 @@ class ShortFlow(Strategy):
 
         return signals
 
-    def position_sizing(self, signals: pd.Series) -> dict[str, float]:
+    def position_sizing(self, signals: pd.Series, prices: pd.DataFrame = None) -> dict[str, float]:
+        """Signal-weighted short-squeeze candidates: 80% deployed, 20% per-name cap."""
         longs = signals[signals > 0].nlargest(self.max_positions)
         if longs.empty:
             return {}
-        total = longs.sum()
-        weights = (longs / total).clip(upper=0.20)
-        return {t: float(w) for t, w in weights.items()}
+        return self._sized_weights(longs, prices=prices, max_deploy=0.80, max_weight=0.20)
+
+    def exit_rules(self, entry_price: float, current_price: float, days_held: int) -> bool:
+        """
+        Exit when:
+          - Stop-loss: -6% (short squeeze thesis failed; momentum may have reversed)
+          - Profit target: +12% (squeeze captured; lock in before short covering exhausts)
+          - Time stop: 30 days (squeeze events are short-lived; stale signal = different regime)
+        """
+        ret = (current_price - entry_price) / entry_price
+        return ret <= -self.STOP_LOSS or ret >= self.PROFIT_TARGET or days_held >= self.TIME_STOP_DAYS

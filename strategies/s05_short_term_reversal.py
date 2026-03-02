@@ -44,6 +44,10 @@ class ShortTermReversal(Strategy):
     LOSS_MAX = 0.20        # But not more than 20% (avoid fundamental blowups)
     VOL_RATIO_MIN = 1.2    # Volume confirmation of selling pressure
 
+    STOP_LOSS      = 0.04   # -4%: reversal thesis failed; forced sellers still in control
+    PROFIT_TARGET  = 0.05   # +5%: take profit (reversals snap back fast, don't get greedy)
+    TIME_STOP_DAYS = 10     # 10 calendar days max (reversal edge decays after first week)
+
     def get_universe(self) -> list[str]:
         from data.universe import SP100
         return SP100
@@ -86,8 +90,19 @@ class ShortTermReversal(Strategy):
 
         return signals
 
-    def position_sizing(self, signals: pd.Series) -> dict[str, float]:
+    def position_sizing(self, signals: pd.Series, prices: pd.DataFrame = None) -> dict[str, float]:
+        """Signal-weighted reversals: 65% deployed, 12% per-name cap (reserve for mid-week entries)."""
         top = signals[signals > 0].nlargest(self.max_positions)
         if top.empty:
             return {}
-        return {t: 1.0 / len(top) for t in top.index}
+        return self._sized_weights(top, prices=prices, max_deploy=0.65, max_weight=0.12)
+
+    def exit_rules(self, entry_price: float, current_price: float, days_held: int) -> bool:
+        """
+        Exit when:
+          - Stop-loss: -4% (reversal not materializing; likely a real breakdown, not forced selling)
+          - Profit target: +5% (reversal captured; lock in, don't ride it back down)
+          - Time stop: 10 days (outside the Jegadeesh 1-week window, signal is stale)
+        """
+        ret = (current_price - entry_price) / entry_price
+        return ret <= -self.STOP_LOSS or ret >= self.PROFIT_TARGET or days_held >= self.TIME_STOP_DAYS

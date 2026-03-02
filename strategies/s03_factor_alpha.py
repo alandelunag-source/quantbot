@@ -43,6 +43,9 @@ class FactorAlpha(Strategy):
     LOOKBACK_SKIP = 21    # 1 month skip
     LOOKBACK_VOL = 90     # 90d realized vol
 
+    STOP_LOSS      = 0.07   # -7% hard stop (factors can be wrong; cut before it becomes structural)
+    TIME_STOP_DAYS = 60     # 60-day max hold (factor signals decay; refresh or exit)
+
     def get_universe(self) -> list[str]:
         from data.universe import SP100
         return SP100
@@ -92,14 +95,23 @@ class FactorAlpha(Strategy):
 
         return signals
 
-    def position_sizing(self, signals: pd.Series) -> dict[str, float]:
-        """Equal-weight top 20 by combined factor score."""
+    def position_sizing(self, signals: pd.Series, prices: pd.DataFrame = None) -> dict[str, float]:
+        """Signal-weighted, 80% deployed, 8% per-name cap across 20 names."""
         top = signals.nlargest(self.max_positions)
         top = top[top > 0]
         if top.empty:
             return {}
-        w = 1.0 / len(top)
-        return {t: w for t in top.index}
+        return self._sized_weights(top, prices=prices, max_deploy=0.80, max_weight=0.08)
+
+    def exit_rules(self, entry_price: float, current_price: float, days_held: int) -> bool:
+        """
+        Exit when:
+          - Stop-loss: -7% (factor thesis broken; don't let a bad factor bet compound)
+          - Time stop: 60 days (factor signals decay; stale signal = dead weight)
+          No profit target: factor alpha is a slow grind — let winners run.
+        """
+        ret = (current_price - entry_price) / entry_price
+        return ret <= -self.STOP_LOSS or days_held >= self.TIME_STOP_DAYS
 
 
 def _z_cross(series: pd.Series) -> pd.Series:

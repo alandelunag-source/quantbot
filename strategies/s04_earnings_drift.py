@@ -40,10 +40,11 @@ class EarningsDrift(Strategy):
     rebalance_freq = "daily"
     max_positions = 10
 
-    GAP_MIN = 0.03       # Minimum gap on earnings day
-    VOL_MIN = 2.0        # Minimum volume ratio
-    HOLD_DAYS = 30       # Maximum hold period
-    TRAIL_STOP = 0.03    # Trailing stop from high watermark
+    GAP_MIN       = 0.03   # Minimum gap on earnings day
+    VOL_MIN       = 2.0    # Minimum volume ratio
+    HOLD_DAYS     = 30     # Maximum hold period (calendar days)
+    STOP_LOSS     = 0.05   # -5% hard stop (gap reversal = thesis broken)
+    PROFIT_TARGET = 0.10   # +10% profit target (PEAD drift typically 5-15%);
 
     def get_universe(self) -> list[str]:
         from data.universe import SP100
@@ -97,10 +98,19 @@ class EarningsDrift(Strategy):
 
         return signals
 
-    def position_sizing(self, signals: pd.Series) -> dict[str, float]:
-        """Equal-weight across active PEAD positions, max 10."""
+    def position_sizing(self, signals: pd.Series, prices: pd.DataFrame = None) -> dict[str, float]:
+        """Signal-weighted PEAD positions: 80% deployed, 10% per-name cap."""
         active = signals[signals > 0].nlargest(self.max_positions)
         if active.empty:
             return {}
-        w = 1.0 / len(active)
-        return {t: w for t in active.index}
+        return self._sized_weights(active, prices=prices, max_deploy=0.80, max_weight=0.10)
+
+    def exit_rules(self, entry_price: float, current_price: float, days_held: int) -> bool:
+        """
+        Exit when:
+          - Stop-loss: -5% (gap that reverses is a failed PEAD — bad earnings quality)
+          - Profit target: +10% (PEAD mean drift; lock in, don't give back)
+          - Time stop: 30 days (drift window empirically exhausted by day 30)
+        """
+        ret = (current_price - entry_price) / entry_price
+        return ret <= -self.STOP_LOSS or ret >= self.PROFIT_TARGET or days_held >= self.HOLD_DAYS

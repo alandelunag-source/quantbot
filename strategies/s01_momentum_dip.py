@@ -43,8 +43,9 @@ class MomentumDip(Strategy):
     VOL_SURGE = 1.5
     RSI_THRESH = 40
     SMA_TREND = 200
-    EXIT_TARGET = 0.025
-    EXIT_DAYS = 7
+    EXIT_TARGET = 0.025   # +2.5% profit target
+    STOP_LOSS   = 0.030   # -3.0% stop-loss (momentum dips that keep falling = fundamental issue)
+    EXIT_DAYS   = 7
 
     def get_universe(self) -> list[str]:
         from data.universe import SP100  # Use SP100 as proxy (liquid subset of SP500)
@@ -107,6 +108,11 @@ class MomentumDip(Strategy):
         return {t: 0.02 for t in longs.index}
 
     def exit_rules(self, entry_price: float, current_price: float, days_held: int) -> bool:
-        """Return True if position should be closed."""
+        """
+        Exit when:
+          - Profit target reached: +2.5% (momentum inflection captured)
+          - Stop-loss: -3.0% (if dip is not reverting, cut and move on)
+          - Time stop: 7 calendar days (reversal window has passed)
+        """
         ret = (current_price - entry_price) / entry_price
-        return ret >= self.EXIT_TARGET or days_held >= self.EXIT_DAYS
+        return ret >= self.EXIT_TARGET or ret <= -self.STOP_LOSS or days_held >= self.EXIT_DAYS

@@ -85,10 +85,9 @@ class CrossAssetMomentum(Strategy):
 
         return signals
 
-    def position_sizing(self, signals: pd.Series) -> dict[str, float]:
-        """Equal-weight top 3 assets."""
+    def position_sizing(self, signals: pd.Series, prices: pd.DataFrame = None) -> dict[str, float]:
+        """Signal-weighted, 95% deployed, 50% per-asset cap. Falls back to safe-haven if no longs."""
         longs = signals[signals > 0].nlargest(self.N_TOP)
         if longs.empty:
-            return {self.SAFE_HAVEN: 1.0} if self.SAFE_HAVEN else {}
-        w = 1.0 / len(longs)
-        return {t: w for t in longs.index}
+            return {self.SAFE_HAVEN: 0.95} if self.SAFE_HAVEN else {}
+        return self._sized_weights(longs, prices=prices, max_deploy=0.95, max_weight=0.50)

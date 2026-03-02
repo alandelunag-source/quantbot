@@ -211,13 +211,12 @@ class PanicReversal(Strategy):
 
         return signals
 
-    def position_sizing(self, signals: pd.Series) -> dict[str, float]:
+    def position_sizing(self, signals: pd.Series, prices: pd.DataFrame = None) -> dict[str, float]:
+        """Signal-weighted panic reversals: 72% deployed, 12% per-name cap (reserve for daily entries)."""
         longs = signals[signals > 0].nlargest(self.max_positions)
         if longs.empty:
             return {}
-        # Equal weight, 12% cap per position
-        w = min(1.0 / len(longs), 0.12)
-        return {t: w for t in longs.index}
+        return self._sized_weights(longs, prices=prices, max_deploy=0.72, max_weight=0.12)
 
     def exit_rules(self, entry_price: float, current_price: float, days_held: int) -> bool:
         """

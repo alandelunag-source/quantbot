@@ -110,8 +110,12 @@ def _amount_to_score(amount_str: str) -> float:
 class CongressionalTrades(Strategy):
     name = "s11_congressional"
     rebalance_freq = "daily"
-    max_positions = 10
-    LOOKBACK_DAYS = 30  # how far back to consider disclosures
+    max_positions  = 10
+    LOOKBACK_DAYS  = 30    # how far back to consider disclosures
+
+    STOP_LOSS      = 0.05  # -5%: congressional alpha thesis failed; exit before it compounds
+    PROFIT_TARGET  = 0.15  # +15%: congress members average ~15% excess return (Ziobrowski 2011)
+    TIME_STOP_DAYS = 60    # 60-day hold max (disclosure-to-full-reprice window)
 
     def get_universe(self) -> list[str]:
         # Universe is dynamic — derived from disclosures
@@ -185,11 +189,19 @@ class CongressionalTrades(Strategy):
 
         return signals
 
-    def position_sizing(self, signals: pd.Series) -> dict[str, float]:
+    def position_sizing(self, signals: pd.Series, prices: pd.DataFrame = None) -> dict[str, float]:
+        """Signal-weighted congressional trades: 85% deployed, 15% per-name cap."""
         longs = signals[signals > 0].nlargest(self.max_positions)
         if longs.empty:
             return {}
-        # Vol-scale: bigger signal = bigger weight, but cap at 15%
-        total = longs.sum()
-        weights = (longs / total * 0.95).clip(upper=0.15)
-        return {t: float(w) for t, w in weights.items()}
+        return self._sized_weights(longs, prices=prices, max_deploy=0.85, max_weight=0.15)
+
+    def exit_rules(self, entry_price: float, current_price: float, days_held: int) -> bool:
+        """
+        Exit when:
+          - Stop-loss: -5% (mimic is wrong or politician was hedging; don't follow bad intel)
+          - Profit target: +15% (avg congressional excess return per Ziobrowski 2011; lock in)
+          - Time stop: 60 days (disclosure lag + repricing window typically exhausted)
+        """
+        ret = (current_price - entry_price) / entry_price
+        return ret <= -self.STOP_LOSS or ret >= self.PROFIT_TARGET or days_held >= self.TIME_STOP_DAYS

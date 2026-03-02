@@ -104,6 +104,9 @@ class ForwardTest:
             self._save_state()
             return self._summary(today)
 
+        # Exit rules (always checked, regardless of rebalance schedule)
+        self._apply_exit_rules(current_prices, pv, today)
+
         # Rebalance?
         if self._should_rebalance(today):
             self._run_signals_and_rebalance(current_prices, pv, today, extra)
@@ -112,6 +115,33 @@ class ForwardTest:
         self._log_day(today, pv, prev_pv)
         self._save_state()
         return self._summary(today)
+
+    def _apply_exit_rules(
+        self,
+        current_prices: dict[str, float],
+        portfolio_value: float,
+        today: str,
+    ) -> None:
+        """
+        Check exit_rules() for every held position and immediately close any that trigger.
+        Runs on every mark-to-market (not just rebalance days) so stop-losses fire intraday.
+        """
+        exit_weights = {}
+        for ticker, pos in self._state["positions"].items():
+            entry_price = pos["entry_price"]
+            current_price = current_prices.get(ticker, entry_price)
+            try:
+                days_held = (pd.Timestamp(today) - pd.Timestamp(pos.get("entry_date", today))).days
+            except Exception:
+                days_held = 0
+            if self.strategy.exit_rules(entry_price, current_price, days_held):
+                exit_weights[ticker] = 0.0
+                logger.info(
+                    "[FT:%s] exit_rules triggered for %s (held %dd, entry=%.2f, now=%.2f)",
+                    self.strategy.name, ticker, days_held, entry_price, current_price,
+                )
+        if exit_weights:
+            self._rebalance(exit_weights, current_prices, portfolio_value, today)
 
     def _run_signals_and_rebalance(
         self,
@@ -138,7 +168,7 @@ class ForwardTest:
             return
 
         latest = signals_df.iloc[-1]
-        target_weights = self.strategy.position_sizing(latest)
+        target_weights = self.strategy.position_sizing(latest, prices=prices_df)
         self._rebalance(target_weights, current_prices, portfolio_value, today)
 
     def _compute_portfolio_value(self, current_prices: dict[str, float]) -> float:
