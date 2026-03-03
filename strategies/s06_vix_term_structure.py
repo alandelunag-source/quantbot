@@ -125,5 +125,5 @@ class VIXTermStructure(Strategy):
             return REGIME_BACKWARDATION
         return REGIME_NEUTRAL
 
-    def position_sizing(self, signals: pd.Series) -> dict[str, float]:
+    def position_sizing(self, signals: pd.Series, prices: pd.DataFrame = None) -> dict[str, float]:
         return {t: float(w) for t, w in signals[signals > 0].items()}

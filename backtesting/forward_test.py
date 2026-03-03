@@ -169,6 +169,27 @@ class ForwardTest:
 
         latest = signals_df.iloc[-1]
         target_weights = self.strategy.position_sizing(latest, prices=prices_df)
+
+        if getattr(self.strategy, "ENTRIES_ONLY", False):
+            # Preserve existing positions at their live weights (delta ~= 0 → no trade).
+            # Only add new tickers up to available slots; exits are handled by exit_rules.
+            max_pos = getattr(self.strategy, "max_positions", 20)
+            slots_available = max(0, max_pos - len(self._state["positions"]))
+            live_weights: dict[str, float] = {}
+            for t, pos in self._state["positions"].items():
+                price = current_prices.get(t, pos["entry_price"])
+                live_weights[t] = (price * pos["shares"]) / portfolio_value if portfolio_value else 0.0
+            merged: dict[str, float] = dict(live_weights)
+            new_added = 0
+            for ticker, w in sorted(target_weights.items(), key=lambda x: -x[1]):
+                if ticker in merged:
+                    continue  # already held — do not resize
+                if new_added >= slots_available:
+                    break
+                merged[ticker] = w
+                new_added += 1
+            target_weights = merged
+
         self._rebalance(target_weights, current_prices, portfolio_value, today)
 
     def _compute_portfolio_value(self, current_prices: dict[str, float]) -> float:

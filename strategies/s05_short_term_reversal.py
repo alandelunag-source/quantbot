@@ -36,8 +36,9 @@ logger = logging.getLogger(__name__)
 
 class ShortTermReversal(Strategy):
     name = "s05_short_term_reversal"
-    rebalance_freq = "weekly"
+    rebalance_freq = "daily"
     max_positions = 10
+    ENTRIES_ONLY = True   # scan daily but never trim existing positions; exits via exit_rules only
 
     LOOKBACK = 5           # 5 trading days
     LOSS_MIN = 0.10        # Must be down at least 10%

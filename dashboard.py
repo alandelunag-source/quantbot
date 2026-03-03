@@ -1036,7 +1036,9 @@ with tab_trades:
 
         # Remaining unmatched lots are currently open positions
         for ticker, lot_list in lots.items():
-            pos = open_pos.get(ticker, {})
+            if ticker not in open_pos:
+                continue   # orphaned lot — position fully closed; FIFO count mismatch, skip
+            pos = open_pos[ticker]
             for lot in lot_list:
                 entry_date = pos.get("entry_date", lot["entry_date"])
                 try:

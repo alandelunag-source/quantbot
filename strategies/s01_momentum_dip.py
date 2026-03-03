@@ -102,7 +102,7 @@ class MomentumDip(Strategy):
 
         return signals
 
-    def position_sizing(self, signals: pd.Series) -> dict[str, float]:
+    def position_sizing(self, signals: pd.Series, prices: pd.DataFrame = None) -> dict[str, float]:
         """2% per position, max 10."""
         longs = signals[signals > 0].nlargest(self.max_positions)
         return {t: 0.02 for t in longs.index}
