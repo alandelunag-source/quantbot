@@ -175,6 +175,30 @@ def inject_css() -> None:
         overflow: hidden;
     }}
 
+    /* ── strategy guide ── */
+    .guide-tag {{
+        display:inline-block; padding:3px 12px; border-radius:20px;
+        font-size:11px; font-weight:700; margin:0 6px 8px 0; letter-spacing:0.4px;
+    }}
+    .gt-equity {{ background:rgba(56,189,248,.15);  color:#38bdf8; border:1px solid rgba(56,189,248,.3); }}
+    .gt-macro  {{ background:rgba(167,139,250,.15); color:#a78bfa; border:1px solid rgba(167,139,250,.3); }}
+    .gt-event  {{ background:rgba(251,146,60,.15);  color:#fb923c; border:1px solid rgba(251,146,60,.3); }}
+    .gt-vol    {{ background:rgba(244,114,182,.15); color:#f472b6; border:1px solid rgba(244,114,182,.3); }}
+    .gt-flow   {{ background:rgba(52,211,153,.15);  color:#34d399; border:1px solid rgba(52,211,153,.3); }}
+    .gt-struct {{ background:rgba(251,191,36,.15);  color:#fbbf24; border:1px solid rgba(251,191,36,.3); }}
+    .guide-h {{ font-size:11px; font-weight:700; color:{C['muted']}; text-transform:uppercase;
+                letter-spacing:0.9px; margin:16px 0 6px; }}
+    .guide-body {{ font-size:14px; color:#e2e8f0; line-height:1.75; }}
+    .exit-grid {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:8px 0 4px; }}
+    .exit-cell {{ background:{C['bg']}; border:1px solid {C['border']}; border-radius:8px;
+                  padding:12px 14px; }}
+    .exit-cell-label {{ font-size:10px; color:{C['muted']}; text-transform:uppercase;
+                        letter-spacing:0.8px; margin-bottom:4px; }}
+    .exit-cell-val {{ font-size:22px; font-weight:800; font-family:'Courier New',monospace; }}
+    .exit-stop   {{ color:{C['red']};   }}
+    .exit-target {{ color:{C['green']}; }}
+    .exit-time   {{ color:{C['cyan']};  }}
+
     /* streamlit default metric tweak */
     [data-testid="stMetric"] {{
         background: {C['card']};
@@ -438,6 +462,53 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+# ── Portfolio hero banner ─────────────────────────────────────────────────────
+calendar_days   = max((datetime.today() - datetime.strptime(start_d, "%Y-%m-%d")).days, 1)
+ann_ret         = total_ret * (365 / calendar_days)
+pret_col        = C["green"] if total_ret >= 0 else C["red"]
+ann_col         = C["green"] if ann_ret   >= 0 else C["red"]
+pret_sign       = "▲" if total_ret >= 0 else "▼"
+ann_sign        = "▲" if ann_ret   >= 0 else "▼"
+
+st.markdown(f"""
+<div style="background:linear-gradient(135deg,{C['card']} 0%,{C['bg']} 100%);
+            border:1px solid {C['border']};border-radius:14px;
+            padding:28px 36px;margin-bottom:18px;
+            display:flex;align-items:center;gap:0;">
+  <div style="flex:1;border-right:1px solid {C['border']};padding-right:40px;">
+    <div style="font-size:11px;color:{C['muted']};text-transform:uppercase;
+                letter-spacing:1.2px;margin-bottom:4px;">Total Portfolio Return</div>
+    <div style="font-size:62px;font-weight:800;color:{pret_col};
+                font-family:'Courier New',monospace;letter-spacing:-3px;line-height:1;">
+      {pret_sign} {abs(total_ret):.2f}%
+    </div>
+    <div style="font-size:13px;color:{C['muted']};margin-top:6px;">
+      across ${total_aum:,.0f} AUM &nbsp;·&nbsp; {len(states)} strategies
+    </div>
+  </div>
+  <div style="flex:1;padding:0 40px;border-right:1px solid {C['border']};">
+    <div style="font-size:11px;color:{C['muted']};text-transform:uppercase;
+                letter-spacing:1.2px;margin-bottom:4px;">Implied Annual Return</div>
+    <div style="font-size:50px;font-weight:800;color:{ann_col};
+                font-family:'Courier New',monospace;letter-spacing:-2px;line-height:1;">
+      {ann_sign} {abs(ann_ret):.1f}%
+    </div>
+    <div style="font-size:13px;color:{C['muted']};margin-top:6px;">
+      extrapolated from {calendar_days} days &nbsp;·&nbsp; short-history estimate
+    </div>
+  </div>
+  <div style="padding-left:40px;text-align:center;flex:0 0 auto;">
+    <div style="font-size:11px;color:{C['muted']};text-transform:uppercase;
+                letter-spacing:1.2px;margin-bottom:4px;">Live Since</div>
+    <div style="font-size:44px;font-weight:800;color:{C['text']};
+                font-family:'Courier New',monospace;line-height:1;">
+      Day {calendar_days}
+    </div>
+    <div style="font-size:13px;color:{C['muted']};margin-top:6px;">{start_d}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
 # ── Top KPI row ───────────────────────────────────────────────────────────────
 best_row  = summary.iloc[0]
 worst_row = summary.iloc[-1]
@@ -473,9 +544,9 @@ with k5:
 st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_ov, tab_eq, tab_bench, tab_pos, tab_trades = st.tabs([
+tab_ov, tab_eq, tab_bench, tab_pos, tab_trades, tab_guide = st.tabs([
     "  Overview  ", "  Equity Curves  ", "  Benchmark vs SPY  ",
-    "  Positions  ", "  Trades  ",
+    "  Positions  ", "  Trades  ", "  Strategy Guide  ",
 ])
 
 filt_keys    = [k for k, v in LABELS.items() if v in selected and k in states]
@@ -1249,3 +1320,357 @@ with tab_trades:
         <table class="perf-table"><thead><tr>{tr_th}</tr></thead><tbody>{trade_rows}</tbody></table>
         </div>
         """, unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 6: STRATEGY GUIDE
+# ─────────────────────────────────────────────────────────────────────────────
+GUIDE = [
+    {
+        "key": "s01_momentum_dip",
+        "title": "S01 · Momentum Dip Buyer",
+        "tags": [("Equity Long", "equity"), ("Mean Reversion", "equity"), ("7-Day Hold", "struct")],
+        "what": "Buys S&P 100 stocks that dip 3–8% on high volume in a single day, while the stock is still in a long-term uptrend. Expects a quick bounce within a week.",
+        "edge": "Healthy stocks in uptrends occasionally get hit by panic sellers, stop-loss cascades, or margin calls — not because anything fundamentally changed. Institutions tend to step in and buy these dips, pushing the price back up. The strategy captures that mechanical recovery.",
+        "entry": [
+            "Stock must be above its 200-day moving average (long-term uptrend intact)",
+            "Single-day drop between -3% and -8% (big enough to be a real dip, small enough to not be a crash)",
+            "Today's trading volume is at least 1.5× the 20-day average (confirms active selling, not just a quiet drift down)",
+            "RSI indicator below 40 (stock is technically oversold — stretched too far down)",
+        ],
+        "exit_stop": "-3.0%", "exit_target": "+2.5%", "exit_time": "7 days",
+        "sizing": "2% of portfolio per stock, up to 10 stocks simultaneously (~20% total deployed at once)",
+        "notes": "Works best when VIX is between 15–25. Very high VIX dips may not bounce as quickly.",
+    },
+    {
+        "key": "s02_cross_asset_mom",
+        "title": "S02 · Cross-Asset Momentum",
+        "tags": [("Macro", "macro"), ("Trend Following", "macro"), ("Monthly", "struct")],
+        "what": "Each month, selects the 3 best-performing asset classes (stocks, bonds, gold, commodities, etc.) based on their 12-month trend and invests equally in them. Moves to safety (short-term treasuries) when nothing is trending up.",
+        "edge": "Asset class trends persist for months, not days — winners keep winning. By only owning assets with positive absolute momentum, the strategy naturally avoids bear markets and crashes. Lower turnover means lower costs.",
+        "entry": [
+            "Rank 10 ETFs (SPY, QQQ, IWM, GLD, TLT, DBC, VNQ, EFA, IEMG, SHY) by 12-month return minus most recent 1-month return",
+            "Only buy assets with a positive 12-month return (absolute momentum filter — avoids downtrends)",
+            "Buy the top 3 qualifying assets in equal weight",
+            "If nothing qualifies (all assets in downtrend), go 100% short-term treasuries (SHY)",
+        ],
+        "exit_stop": "None", "exit_target": "None", "exit_time": "Monthly rebalance",
+        "sizing": "Equal weight across top 3 assets, max 50% per asset, 95% of portfolio deployed",
+        "notes": "This strategy doesn't use stop-losses — the monthly signal itself will exit a losing position when it falls out of the top 3.",
+    },
+    {
+        "key": "s03_factor_alpha",
+        "title": "S03 · Factor Alpha",
+        "tags": [("Equity Long", "equity"), ("Multi-Factor", "equity"), ("60-Day Hold", "struct")],
+        "what": "Owns the top 20 S&P 100 stocks scoring highest on two academically proven factors: strong 12-month price momentum AND low volatility. Rebalances weekly.",
+        "edge": "Decades of academic research across 50+ countries confirm these two factors generate persistent excess returns. Combining them reduces drawdowns (low-vol dampens momentum's crashes) while preserving alpha.",
+        "entry": [
+            "Score each S&P 100 stock on momentum: 12-month return minus last month (skip-1 momentum), z-scored across the universe",
+            "Score each stock on low volatility: negative of 90-day realized volatility, z-scored",
+            "Combine: 60% momentum score + 40% low-vol score",
+            "Buy the top 20 stocks weekly",
+        ],
+        "exit_stop": "-7.0%", "exit_target": "None (let winners run)", "exit_time": "60 days",
+        "sizing": "Signal-weighted sizing, max 8% per stock, 80% of portfolio deployed. No profit target — momentum winners are held until the factor signal decays.",
+        "notes": "Only stop-loss and time stop exist — there is intentionally no profit target because momentum stocks tend to keep rising.",
+    },
+    {
+        "key": "s04_earnings_drift",
+        "title": "S04 · Post-Earnings Drift (PEAD)",
+        "tags": [("Equity Long", "equity"), ("Event-Driven", "event"), ("30-Day Hold", "struct")],
+        "what": "Buys stocks that gap up 3%+ on more than double their normal volume on earnings day — a strong signal that results beat expectations. Holds for up to 30 days while the market slowly reprices.",
+        "edge": "Post-Earnings Announcement Drift (PEAD) is one of the most documented anomalies in finance: markets underreact to earnings surprises. Stocks with positive surprise continue drifting up for weeks as slow-moving institutional investors accumulate.",
+        "entry": [
+            "Stock gaps up 3% or more in a single day (earnings surprise proxy)",
+            "That day's volume is at least 2× the 20-day average (confirms institutional reaction, not noise)",
+            "Signal stays active for 30 days from the gap-up date",
+        ],
+        "exit_stop": "-5.0%", "exit_target": "+10.0%", "exit_time": "30 days",
+        "sizing": "Signal-weighted, max 10% per stock, up to 10 concurrent positions, 80% deployed",
+        "notes": "The strategy trims positions during rebalance as weights drift. A small trim is NOT a full exit — only a full sell brings a position to zero.",
+    },
+    {
+        "key": "s05_short_term_reversal",
+        "title": "S05 · Short-Term Reversal",
+        "tags": [("Equity Long", "equity"), ("Mean Reversion", "equity"), ("10-Day Hold", "struct")],
+        "what": "Buys S&P 100 stocks that crash 10–20% over 5 trading days due to forced selling, then bets on a bounce within 10 days. Scans daily for new opportunities but never disturbs existing positions.",
+        "edge": "Jegadeesh (1990) documented that 1-week losers outperform 1-week winners by ~1.7%/month. The driver: margin calls, ETF rebalancing, and stop-loss cascades create temporary prices below fair value — not because the company deteriorated. These reverse when the mechanical selling ends.",
+        "entry": [
+            "5-day return between -10% and -20% (too small = noise; too large = real fundamental problem)",
+            "Volume on the down days above 1.2× average (confirms selling is liquidity-driven, not informational)",
+            "Not during an earnings week (avoids buying stocks with genuine bad news)",
+            "Daily scan: new qualifying stocks are added each day as new entries only",
+        ],
+        "exit_stop": "-5.0%", "exit_target": "+5.0%", "exit_time": "10 days",
+        "sizing": "Signal-weighted, max 12% per stock, 65% deployed (reserves capital for daily new entries). Never trims or rebalances existing positions — exits only via stop/target/time.",
+        "notes": "Works best in high-VIX environments (>20) where forced selling is elevated. In calm markets, fewer qualifying signals appear.",
+    },
+    {
+        "key": "s06_vix_term_structure",
+        "title": "S06 · VIX Term Structure Carry",
+        "tags": [("Macro", "macro"), ("Volatility", "vol"), ("Daily Regime", "struct")],
+        "what": "Reads the 'shape' of the fear curve — comparing short-term fear (VIX9D, 9-day) to medium-term fear (VIX, 30-day) — to decide each day whether to be in stocks, bonds, or gold.",
+        "edge": "VIX futures are almost always in contango (future fear priced higher than current). When the curve is steep, short-term fear is subdued and stocks thrive. When the curve inverts (short-term panic spikes above long-term), a flight to safety is warranted.",
+        "entry": [
+            "Calculate the 'roll' = (VIX − VIX9D) / VIX9D and z-score it over 60 days",
+            "Steep contango (z > 1.0): go 100% SPY — markets calm, carry stocks",
+            "Near-term panic / backwardation (z < -1.0): go 60% short-term treasuries + 40% gold",
+            "Neutral zone: 60% SPY + 40% long-term bonds (TLT)",
+            "Extreme fear override (VIX > 28 AND curve inverted): go defensive immediately",
+        ],
+        "exit_stop": "Regime change", "exit_target": "Regime change", "exit_time": "Daily rebalance",
+        "sizing": "Fixed weights per regime: 40-100% SPY in calm, 60% SHY + 40% GLD in panic",
+        "notes": "No per-position stop-losses. The regime signal itself is the risk manager.",
+    },
+    {
+        "key": "s07_macro_regime",
+        "title": "S07 · Macro Regime Switcher",
+        "tags": [("Macro", "macro"), ("Regime", "macro"), ("Low Turnover", "struct")],
+        "what": "Switches between full-risk (QQQ), balanced (SPY + bonds), and defensive (treasuries + gold) allocations based on 4 macro signals: VIX level, yield curve shape, stock market trend, and credit market health.",
+        "edge": "Macro regimes persist for weeks to months, not days. Being fully in equities during a prolonged bear market can destroy years of returns. This strategy avoids those regimes by monitoring 4 independent signals, triggering a regime change only when multiple confirm.",
+        "entry": [
+            "Risk-On (all 4 green: VIX < 18, positive yield curve, SPY above 200-day MA, credit spreads benign): 100% QQQ",
+            "Neutral (mixed signals — default): 60% SPY + 40% long-term bonds",
+            "Risk-Off (VIX > 28 OR inverted yield curve + SPY downtrend): 60% short-term treasuries + 40% gold",
+            "Credit tiebreaker: HYG/LQD ratio momentum can upgrade or downgrade equity allocation",
+        ],
+        "exit_stop": "Regime change only", "exit_target": "Regime change only", "exit_time": "Weekly check (min turnover)",
+        "sizing": "Fixed weights per regime. Only 2 positions at a time. Very low turnover by design.",
+        "notes": "Designed to be boring most of the time. Regime changes are infrequent — the strategy earns by avoiding crashes, not by trading often.",
+    },
+    {
+        "key": "s09_dollar_carry",
+        "title": "S09 · Dollar Carry & FX Momentum",
+        "tags": [("Macro", "macro"), ("FX", "macro"), ("Monthly", "struct")],
+        "what": "Uses the direction of the US dollar (UUP ETF) as a barometer for global risk appetite, then positions in the appropriate assets: dollar strengthening = go defensive; dollar weakening = go international and commodities.",
+        "edge": "The dollar is the world's reserve currency — when it strengthens, global liquidity tightens and risk assets sell off. When it weakens, international stocks and commodities thrive. This is one of the most reliable macro relationships documented across 50+ years.",
+        "entry": [
+            "Compare UUP (dollar ETF) 20-day vs 60-day momentum",
+            "Dollar strengthening: go 40% UUP + 30% commodities (DBC) + 30% short-term treasuries",
+            "Dollar weakening + international stocks rising (EFA positive): 30% European stocks + 30% EM + 20% gold + 20% commodities",
+            "Dollar weakening + international stocks flat/down: balanced 25% each in EFA/SPY/GLD/DBC",
+        ],
+        "exit_stop": "Regime change", "exit_target": "Regime change", "exit_time": "Monthly rebalance",
+        "sizing": "Fixed weights per regime, 4 positions max, fully invested",
+        "notes": "Low trading frequency reduces transaction costs. The strategy rebalances once a month unless the dollar regime flips dramatically.",
+    },
+    {
+        "key": "s10_vol_surface",
+        "title": "S10 · Volatility Risk Premium Harvest",
+        "tags": [("Volatility", "vol"), ("Carry", "vol"), ("Daily Regime", "struct")],
+        "what": "Profits from the persistent gap between how much fear the options market prices in (implied volatility / VIX) and how much volatility actually materializes (realized volatility). When options are overpriced, the strategy collects that premium by being positioned against excessive fear.",
+        "edge": "Implied volatility is consistently 3–5 points higher than realized volatility over time — a well-documented Variance Risk Premium (VRP). Like an insurance company charging more than expected claims, this strategy earns by selling overpriced fear.",
+        "entry": [
+            "Calculate VRP = VIX / 100 (implied vol) minus 21-day realized volatility",
+            "Z-score VRP over 90 days",
+            "Very expensive options (z > 1.5): 95% SPY — short vol implicit, very long equities",
+            "Cheap options / market stressed (z < -1.0): 80% SPY + 5% VXX protection + 15% treasuries",
+            "Neutral: 90% SPY + 10% treasuries",
+            "Hard emergency stop: if VIX spikes more than 5 points in a single day, exit all risk immediately",
+        ],
+        "exit_stop": "VIX spike > 5 pts/day", "exit_target": "Regime change", "exit_time": "Daily rebalance",
+        "sizing": "Fixed per regime, max 5% in volatility instruments, primarily SPY exposure",
+        "notes": "The VIX spike stop is critical — in a market crash, being short volatility without a hard stop can cause catastrophic losses in hours.",
+    },
+    {
+        "key": "s11_congressional",
+        "title": "S11 · Congressional Trade Follower",
+        "tags": [("Event-Driven", "event"), ("Alternative Data", "flow"), ("60-Day Hold", "struct")],
+        "what": "Mirrors stock purchases made by US Congress members. Politicians must legally disclose trades within 45 days, and academic research shows they consistently earn excess returns — likely from policy information advantages.",
+        "edge": "Ziobrowski (2004, 2011) found House members earn ~6–10% excess annual returns; Senators earn ~12%. While some of this edge has narrowed post-STOCK Act, the signal remains statistically significant, especially for Senators near key policy committees.",
+        "entry": [
+            "Fetch daily House and Senate trade disclosures from public sources",
+            "Filter for purchases only (sales are less informative — often forced by diversification requirements)",
+            "Score each stock: freshness of disclosure (recent = better) × transaction size × number of distinct politicians buying",
+            "Senators get 50% more weight than House members (historically stronger signal)",
+            "Buy top 10 scored stocks",
+        ],
+        "exit_stop": "-5.0%", "exit_target": "+15.0%", "exit_time": "60 days",
+        "sizing": "Signal-weighted, max 15% per stock, up to 10 positions, 85% deployed",
+        "notes": "Data feed can fail (House/Senate websites go down). When data is unavailable, the strategy stays flat rather than guessing.",
+    },
+    {
+        "key": "s12_index_inclusion",
+        "title": "S12 · Index Inclusion Front-Run",
+        "tags": [("Event-Driven", "event"), ("Structural", "struct"), ("30-Day Hold", "struct")],
+        "what": "Buys stocks newly announced for S&P 500 inclusion before the massive wave of index fund buying that must happen when they officially join. Sells after the passive buying pressure is absorbed.",
+        "edge": "When a stock joins the S&P 500, every index fund in the world must buy it — at any price. This creates a predictable, mechanical demand event. Front-running this flow historically generates 3–5% in the window between announcement and effective date.",
+        "entry": [
+            "Monitor S&P 500 additions (announcement typically 5 trading days before effective date)",
+            "Buy within 2 days of announcement; signal peaks on the effective date then fades",
+            "Also tracks Russell 1000 stocks approaching S&P 500 eligibility (>20% 1-year return, near 52-week high) for pre-announcement drift",
+        ],
+        "exit_stop": "-3.0%", "exit_target": "+5.0%", "exit_time": "30 days",
+        "sizing": "Signal-weighted, max 15% per name, up to 8 positions, 70% deployed",
+        "notes": "The signal inverts after inclusion (score goes negative) — the strategy exits as passive buying is complete and 'sell the news' dynamics emerge.",
+    },
+    {
+        "key": "s13_pre_earnings_drift",
+        "title": "S13 · Pre-Earnings Drift",
+        "tags": [("Event-Driven", "event"), ("Earnings", "event"), ("5-Day Hold", "struct")],
+        "what": "Buys high-quality earnings-beaters in the 3–7 trading days before their earnings announcement, then exits the day before to avoid overnight announcement risk. No earnings gap risk.",
+        "edge": "Barber et al. (2013) documents ~1.5–2.5% average return in the 5 days before earnings for consistent earnings-beaters. Institutional investors quietly accumulate positions ahead of announcements they expect to be positive, lifting the price before the news breaks.",
+        "entry": [
+            "Next earnings date is 3–7 trading days away",
+            "Stock has beaten earnings estimates in at least 60% of the last 8 quarters",
+            "Bonus: both of the last 2 quarters were positive surprises",
+            "Stock is in an uptrend (positive 60-day return — institutional interest present)",
+            "Score increases as the earnings date approaches (signal strongest 3 days out)",
+        ],
+        "exit_stop": "Day before earnings", "exit_target": "+10.0%", "exit_time": "Day before earnings",
+        "sizing": "Signal-weighted, max 12% per stock, up to 8 positions, 70% deployed",
+        "notes": "The strategy always exits the day before earnings — never holds through an announcement. This is by design: the edge is in the pre-announcement drift, not the earnings reaction.",
+    },
+    {
+        "key": "s14_gamma_wall",
+        "title": "S14 · Gamma Wall (Options Market Structure)",
+        "tags": [("Derivatives", "vol"), ("Market Structure", "struct"), ("Daily Regime", "struct")],
+        "what": "Reads the options market to determine whether the stock market is likely to stay pinned near a level (low vol) or break out dramatically (high vol), then positions accordingly.",
+        "edge": "Options market makers must continuously delta-hedge their books. When they hold large positive gamma positions (net long options), they act as shock absorbers — buying dips and selling rallies — which suppresses volatility and pins prices. When they're net short gamma, they amplify moves. GEX (Gamma Exposure) measures this.",
+        "entry": [
+            "Calculate SPY Gamma Exposure (GEX) from the options chain across 3 nearest expiries",
+            "Positive GEX / pinning regime (VIX < 15 proxy): 70% SPY + 30% QQQ — low vol environment, own equities",
+            "Negative GEX / trending regime (VIX > 25 proxy): 30% UVXY (vol ETF) + 40% SPY + 30% gold — expect big moves",
+            "Neutral regime: 60% SPY + 40% short-term treasuries",
+        ],
+        "exit_stop": "Regime change", "exit_target": "Regime change", "exit_time": "Daily rebalance",
+        "sizing": "Fixed weights per regime, 3 positions max",
+        "notes": "Most retail investors have never heard of GEX. It's a quant tool used by institutional options desks to predict market pinning. UVXY is a 1.5× leveraged VIX ETF — only held in trending/high-vol regimes.",
+    },
+    {
+        "key": "s15_short_flow",
+        "title": "S15 · Institutional Short Flow",
+        "tags": [("Alternative Data", "flow"), ("Contrarian", "equity"), ("30-Day Hold", "struct")],
+        "what": "Uses FINRA's daily short volume data to detect when institutions are aggressively shorting a stock. Plays the contrarian squeeze when extreme pessimism meets a big price drop — historically a setup for rapid reversals.",
+        "edge": "When short interest is extreme (>68% of volume is short) AND the stock has already dropped significantly, the setup is ripe for a short squeeze: any positive news or buying pressure forces shorts to cover, amplifying the move upward.",
+        "entry": [
+            "Extreme contrarian buy: short ratio ≥ 68% of daily volume AND stock down >5% over 5 days → score 0.8 (squeeze setup)",
+            "Momentum confirmation: short ratio ≤ 38% AND stock rising → score 0.5 (low shorts, price going up = clean trend)",
+            "Sustained bearish selling (3-day avg ≥ 55%): negative signal — avoid or short",
+            "Fallback (no FINRA data): uses volume-ratio + price-return proxy",
+        ],
+        "exit_stop": "-6.0%", "exit_target": "+12.0%", "exit_time": "30 days",
+        "sizing": "Signal-weighted, max 20% per stock, up to 8 positions, 80% deployed",
+        "notes": "Short squeezes can be violent and fast — hence the wide +12% profit target to capture the full move before short-covering exhausts itself.",
+    },
+    {
+        "key": "s16_overnight_carry",
+        "title": "S16 · Overnight Carry",
+        "tags": [("Structural", "struct"), ("Market Microstructure", "flow"), ("Daily", "struct")],
+        "what": "Captures the well-documented 'overnight premium': nearly all of the stock market's long-run returns occur between market close and the next morning's open — not during the trading day itself.",
+        "edge": "Lou, Polk & Skouras (2019) documented that 100%+ of the S&P 500's long-run returns occurred close-to-open over 90 years of data. Institutional investors accumulate orders during the day and execute at the open, paying a premium for overnight gap risk that retail investors can harvest.",
+        "entry": [
+            "Always hold overnight when SPY is above its 50-day moving average (uptrend confirmed)",
+            "In uptrend: 60% SPY + 40% QQQ — maximize overnight equity exposure",
+            "Below 50-day MA (downtrend): shift to 40% SPY + 30% gold + 30% long bonds — defensive overnight carry",
+            "Scale back when VIX > 20 (reduce equity portion); scale back further at VIX > 28",
+            "Full exit if VIX ≥ 35 (tail risk too high to hold overnight)",
+        ],
+        "exit_stop": "VIX ≥ 35 full exit", "exit_target": "None", "exit_time": "Daily rebalance",
+        "sizing": "40-60% equities, rest in defensive assets. Normalized to 100% invested.",
+        "notes": "This strategy essentially holds positions permanently — the 'overnight carry' is structural, not a trade. It earns by being in the right mix of assets at each close, not by timing entry/exit.",
+    },
+    {
+        "key": "s17_panic_reversal",
+        "title": "S17 · Market Panic Reversal",
+        "tags": [("Equity Long", "equity"), ("Mean Reversion", "equity"), ("5-Day Hold", "struct"), ("Empirical", "flow")],
+        "what": "Buys quality large-cap stocks that fell WITH the overall market during a VIX spike — a specific pattern that historically reverts at +1.98% average with 67% win rate within 5 days.",
+        "edge": "Built from our own empirical research on 102 stocks over 2 years. Key insight: stocks that crash ALONE on bad news do NOT revert (−0.51% average). But stocks that crash WITH the market during VIX > 25 episodes DO revert (+1.98%, t-stat 8.51). The driver: forced risk-parity deleveraging and ETF redemptions hit quality stocks indiscriminately — not because anything broke. When VIX mean-reverts, these bounce back sharply.",
+        "entry": [
+            "VIX must be above 20 (elevated fear; indiscriminate selling regime required)",
+            "Stock fell at least -2% today",
+            "Stock's drop was co-movement with the market: relative loss vs SPY between -2% and 0% (fell with market, not alone — avoids idiosyncratic crashes)",
+            "Volume 0.7× to 2.5× average (normal to elevated — avoids extreme capitulation spikes which are continuation signals)",
+            "Score = size of drop × VIX premium above 20 × quality of co-movement. Buy top 8.",
+        ],
+        "exit_stop": "-3.0%", "exit_target": "+2.5%", "exit_time": "5 days",
+        "sizing": "Signal-weighted, max 12% per stock, up to 8 positions, 72% deployed (reserves for daily new signals)",
+        "notes": "The co-movement filter is the most important rule — it's what separates the real edge from buying every dip. If a stock falls -10% while the market is flat, that's NOT a panic reversal candidate.",
+    },
+]
+
+with tab_guide:
+    st.markdown(f"""
+    <div style="font-size:14px;color:{C['muted']};margin-bottom:20px;line-height:1.7;">
+        Plain-language breakdown of every strategy — what it does, why it works, and how it manages risk.
+        Written so you can explain each one to someone with no finance background.
+    </div>
+    """, unsafe_allow_html=True)
+
+    for g in GUIDE:
+        pv_g  = states.get(g["key"], {}).get("portfolio_value", START_CASH)
+        ret_g = (pv_g / START_CASH - 1) * 100
+        ret_arrow = "▲" if ret_g >= 0 else "▼"
+        ret_col_g = C["green"] if ret_g >= 0 else C["red"]
+        label_g = f"{g['title']}  ·  " \
+                  f"<span style='color:{ret_col_g};font-weight:700;'>{ret_arrow} {ret_g:+.2f}%</span>"
+
+        with st.expander(g["title"] + f"   {ret_arrow} {ret_g:+.2f}%", expanded=False):
+            # Tags
+            tags_html = "".join(
+                f'<span class="guide-tag gt-{cls}">{name}</span>'
+                for name, cls in g["tags"]
+            )
+            st.markdown(f'<div style="margin-bottom:14px;">{tags_html}</div>',
+                        unsafe_allow_html=True)
+
+            # What it does
+            st.markdown(f'<div class="guide-h">What it does</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="guide-body">{g["what"]}</div>', unsafe_allow_html=True)
+
+            # Why it works
+            st.markdown(f'<div class="guide-h">Why it works</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="guide-body">{g["edge"]}</div>', unsafe_allow_html=True)
+
+            # Entry rules
+            st.markdown(f'<div class="guide-h">Entry rules — all must be true to open a position</div>',
+                        unsafe_allow_html=True)
+            bullets = "".join(f"<li style='margin-bottom:6px;color:#e2e8f0;font-size:14px;'>{e}</li>"
+                              for e in g["entry"])
+            st.markdown(f'<ul style="margin:4px 0 0 0;padding-left:20px;line-height:1.7;">'
+                        f'{bullets}</ul>', unsafe_allow_html=True)
+
+            # Exit rules
+            st.markdown(f'<div class="guide-h">Exit rules</div>', unsafe_allow_html=True)
+            sl_col  = C["red"]   if g["exit_stop"]   != "None" else C["muted"]
+            pt_col  = C["green"] if g["exit_target"]  != "None" else C["muted"]
+            ts_col  = C["cyan"]
+            st.markdown(f"""
+            <div class="exit-grid">
+              <div class="exit-cell">
+                <div class="exit-cell-label">Stop-Loss</div>
+                <div class="exit-cell-val exit-stop" style="color:{sl_col};">{g["exit_stop"]}</div>
+                <div style="font-size:11px;color:{C['muted']};margin-top:4px;">
+                  Cut the loss — thesis is wrong
+                </div>
+              </div>
+              <div class="exit-cell">
+                <div class="exit-cell-label">Profit Target</div>
+                <div class="exit-cell-val exit-target" style="color:{pt_col};">{g["exit_target"]}</div>
+                <div style="font-size:11px;color:{C['muted']};margin-top:4px;">
+                  Lock in gains — don't get greedy
+                </div>
+              </div>
+              <div class="exit-cell">
+                <div class="exit-cell-label">Time Stop</div>
+                <div class="exit-cell-val exit-time">{g["exit_time"]}</div>
+                <div style="font-size:11px;color:{C['muted']};margin-top:4px;">
+                  Exit regardless — signal expired
+                </div>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Sizing & risk
+            st.markdown(f'<div class="guide-h">Sizing & risk management</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="guide-body">{g["sizing"]}</div>', unsafe_allow_html=True)
+
+            # Notes
+            if g.get("notes"):
+                st.markdown(f"""
+                <div style="background:rgba(56,189,248,.06);border:1px solid rgba(56,189,248,.2);
+                            border-radius:8px;padding:12px 16px;margin-top:14px;">
+                  <span style="font-size:11px;font-weight:700;color:{C['cyan']};
+                               text-transform:uppercase;letter-spacing:0.8px;">Note  </span>
+                  <span style="font-size:13px;color:{C['muted']};">{g['notes']}</span>
+                </div>
+                """, unsafe_allow_html=True)
