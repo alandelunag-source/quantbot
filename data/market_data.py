@@ -102,7 +102,8 @@ def get_bars(
         MultiIndex DataFrame (cols: Open/High/Low/Close/Volume × ticker).
         Adjusted close used where available.
     """
-    end = end or datetime.today()
+    # yfinance end date is exclusive, so add 1 day to include today's session
+    end = (end or datetime.today()) + timedelta(days=1)
     start = end - timedelta(days=days + 30)  # extra buffer for weekends/holidays
 
     kwargs = dict(
