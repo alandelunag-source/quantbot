@@ -1,5 +1,5 @@
 """
-Quantbot Paper Trading Dashboard  ·  venv\Scripts\streamlit.exe run dashboard.py
+Quantbot Paper Trading Dashboard  ·  venv/Scripts/streamlit.exe run dashboard.py
 """
 from __future__ import annotations
 
