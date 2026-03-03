@@ -988,7 +988,10 @@ with tab_trades:
         raw_trades = states[k].get("trades", [])
         label      = SHORT.get(k, k)
 
-        lots: dict[str, list] = {}   # ticker -> FIFO queue of open lots
+        # AVCO (average-cost) tracker: proportional cost basis per position.
+        # Handles partial rebalancing trims correctly — FIFO falsely matched a
+        # tiny partial sell to the full buy lot, showing huge fake losses in S04.
+        trackers: dict[str, dict] = {}  # ticker -> running position state
 
         for t in raw_trades:
             ticker   = t.get("ticker", "")
@@ -996,73 +999,88 @@ with tab_trades:
             notional = t.get("dollar_value", 0.0)
             cost     = t.get("cost", 0.0)
             date     = t.get("date", "")
+            delta_w  = abs(t.get("delta_weight", 0.0))
 
             if action == "BUY":
-                lots.setdefault(ticker, []).append({
-                    "entry_date":     date,
-                    "entry_notional": notional,
-                    "entry_cost":     cost,
-                })
+                # Start fresh tracker if ticker is new or was fully closed
+                if ticker not in trackers or trackers[ticker]["weight"] < 0.001:
+                    trackers[ticker] = {
+                        "weight":          0.0,
+                        "basis":           0.0,   # cost basis of currently held shares
+                        "first_date":      date,
+                        "total_pnl":       0.0,
+                        "total_invested":  0.0,
+                        "total_proceeds":  0.0,
+                    }
+                tr = trackers[ticker]
+                tr["weight"]         += delta_w
+                tr["basis"]          += notional + cost   # full cost (principal + fee)
+                tr["total_invested"] += notional
 
-            elif action == "SELL" and ticker in lots and lots[ticker]:
-                lot = lots[ticker].pop(0)   # FIFO
-                realized_pnl = notional - lot["entry_notional"] - lot["entry_cost"] - cost
-                realized_pct = ((notional / lot["entry_notional"]) - 1) * 100 \
-                               if lot["entry_notional"] else 0.0
-                try:
-                    days = (pd.Timestamp(date) - pd.Timestamp(lot["entry_date"])).days
-                except Exception:
-                    days = None
-                pos_records.append({
-                    "_key":        k,
-                    "Strategy":    label,
-                    "Entry Date":  lot["entry_date"],
-                    "Exit Date":   date,
-                    "Ticker":      ticker,
-                    "Invested":    lot["entry_notional"],
-                    "Proceeds":    notional,
-                    "Real $":      realized_pnl,
-                    "Real %":      realized_pct,
-                    "Status":      "CLOSED",
-                    "Days":        days,
-                    "Entry Price": None,
-                    "Cur Price":   None,
-                    "Shares":      None,
-                    "Unreal $":    None,
-                    "Unreal %":    None,
-                })
-                if not lots[ticker]:
-                    del lots[ticker]
+            elif action == "SELL" and ticker in trackers and trackers[ticker]["weight"] >= 0.001:
+                tr = trackers[ticker]
+                sell_frac     = min(1.0, delta_w / tr["weight"])
+                cost_portion  = tr["basis"] * sell_frac   # proportional cost basis released
+                tr["basis"]          = max(0.0, tr["basis"] - cost_portion)
+                tr["weight"]         = max(0.0, tr["weight"] - delta_w)
+                tr["total_proceeds"] += notional
+                tr["total_pnl"]      += notional - cost_portion - cost
 
-        # Remaining unmatched lots are currently open positions
-        for ticker, lot_list in lots.items():
+                if tr["weight"] < 0.005:   # position fully closed
+                    invested = tr["total_invested"]
+                    realized_pct = tr["total_pnl"] / invested * 100 if invested else 0.0
+                    try:
+                        days = (pd.Timestamp(date) - pd.Timestamp(tr["first_date"])).days
+                    except Exception:
+                        days = None
+                    pos_records.append({
+                        "_key":        k,
+                        "Strategy":    label,
+                        "Entry Date":  tr["first_date"],
+                        "Exit Date":   date,
+                        "Ticker":      ticker,
+                        "Invested":    invested,
+                        "Proceeds":    tr["total_proceeds"],
+                        "Real $":      tr["total_pnl"],
+                        "Real %":      realized_pct,
+                        "Status":      "CLOSED",
+                        "Days":        days,
+                        "Entry Price": None,
+                        "Cur Price":   None,
+                        "Shares":      None,
+                        "Unreal $":    None,
+                        "Unreal %":    None,
+                    })
+                    del trackers[ticker]
+
+        # Remaining trackers are currently open positions
+        for ticker, tr in trackers.items():
             if ticker not in open_pos:
-                continue   # orphaned lot — position fully closed; FIFO count mismatch, skip
+                continue   # orphaned tracker — position fully closed, skip
             pos = open_pos[ticker]
-            for lot in lot_list:
-                entry_date = pos.get("entry_date", lot["entry_date"])
-                try:
-                    days = (datetime.today().date() - pd.Timestamp(entry_date).date()).days
-                except Exception:
-                    days = None
-                pos_records.append({
-                    "_key":        k,
-                    "Strategy":    label,
-                    "Entry Date":  entry_date,
-                    "Exit Date":   None,
-                    "Ticker":      ticker,
-                    "Invested":    lot["entry_notional"],
-                    "Proceeds":    None,
-                    "Real $":      None,
-                    "Real %":      None,
-                    "Status":      "OPEN",
-                    "Days":        days,
-                    "Entry Price": pos.get("entry_price"),
-                    "Cur Price":   None,
-                    "Shares":      pos.get("shares"),
-                    "Unreal $":    None,
-                    "Unreal %":    None,
-                })
+            entry_date = pos.get("entry_date", tr["first_date"])
+            try:
+                days = (datetime.today().date() - pd.Timestamp(entry_date).date()).days
+            except Exception:
+                days = None
+            pos_records.append({
+                "_key":        k,
+                "Strategy":    label,
+                "Entry Date":  entry_date,
+                "Exit Date":   None,
+                "Ticker":      ticker,
+                "Invested":    tr["basis"],   # cost basis of currently held shares
+                "Proceeds":    None,
+                "Real $":      None,
+                "Real %":      None,
+                "Status":      "OPEN",
+                "Days":        days,
+                "Entry Price": pos.get("entry_price"),
+                "Cur Price":   None,
+                "Shares":      pos.get("shares"),
+                "Unreal $":    None,
+                "Unreal %":    None,
+            })
 
     if not pos_records:
         st.info("No trades recorded yet.")
