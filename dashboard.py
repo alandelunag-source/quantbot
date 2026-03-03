@@ -1329,7 +1329,7 @@ GUIDE = [
         "key": "s01_momentum_dip",
         "title": "S01 · Momentum Dip Buyer",
         "tags": [("Equity Long", "equity"), ("Mean Reversion", "equity"), ("7-Day Hold", "struct")],
-        "what": "Buys S&P 100 stocks that dip 3–8% on high volume in a single day, while the stock is still in a long-term uptrend. Expects a quick bounce within a week.",
+        "what": "Buys S&P 500 + NASDAQ-100 stocks (~517 names) that dip 3–8% on high volume in a single day, while the stock is still in a long-term uptrend. Expects a quick bounce within a week.",
         "edge": "Healthy stocks in uptrends occasionally get hit by panic sellers, stop-loss cascades, or margin calls — not because anything fundamentally changed. Institutions tend to step in and buy these dips, pushing the price back up. The strategy captures that mechanical recovery.",
         "entry": [
             "Stock must be above its 200-day moving average (long-term uptrend intact)",
@@ -1361,10 +1361,10 @@ GUIDE = [
         "key": "s03_factor_alpha",
         "title": "S03 · Factor Alpha",
         "tags": [("Equity Long", "equity"), ("Multi-Factor", "equity"), ("60-Day Hold", "struct")],
-        "what": "Owns the top 20 S&P 100 stocks scoring highest on two academically proven factors: strong 12-month price momentum AND low volatility. Rebalances weekly.",
+        "what": "Owns the top 20 stocks from the S&P 500 + NASDAQ-100 universe (~517 names) scoring highest on two academically proven factors: strong 12-month price momentum AND low volatility. Rebalances weekly.",
         "edge": "Decades of academic research across 50+ countries confirm these two factors generate persistent excess returns. Combining them reduces drawdowns (low-vol dampens momentum's crashes) while preserving alpha.",
         "entry": [
-            "Score each S&P 100 stock on momentum: 12-month return minus last month (skip-1 momentum), z-scored across the universe",
+            "Score each stock in the S&P 500 + NASDAQ-100 universe on momentum: 12-month return minus last month (skip-1 momentum), z-scored across the universe",
             "Score each stock on low volatility: negative of 90-day realized volatility, z-scored",
             "Combine: 60% momentum score + 40% low-vol score",
             "Buy the top 20 stocks weekly",
@@ -1377,7 +1377,7 @@ GUIDE = [
         "key": "s04_earnings_drift",
         "title": "S04 · Post-Earnings Drift (PEAD)",
         "tags": [("Equity Long", "equity"), ("Event-Driven", "event"), ("30-Day Hold", "struct")],
-        "what": "Buys stocks that gap up 3%+ on more than double their normal volume on earnings day — a strong signal that results beat expectations. Holds for up to 30 days while the market slowly reprices.",
+        "what": "Scans S&P 500 + NASDAQ-100 (~517 stocks) for names that gap up 3%+ on more than double their normal volume on earnings day — a strong signal that results beat expectations. Holds for up to 30 days while the market slowly reprices.",
         "edge": "Post-Earnings Announcement Drift (PEAD) is one of the most documented anomalies in finance: markets underreact to earnings surprises. Stocks with positive surprise continue drifting up for weeks as slow-moving institutional investors accumulate.",
         "entry": [
             "Stock gaps up 3% or more in a single day (earnings surprise proxy)",
@@ -1392,7 +1392,7 @@ GUIDE = [
         "key": "s05_short_term_reversal",
         "title": "S05 · Short-Term Reversal",
         "tags": [("Equity Long", "equity"), ("Mean Reversion", "equity"), ("10-Day Hold", "struct")],
-        "what": "Buys S&P 100 stocks that crash 10–20% over 5 trading days due to forced selling, then bets on a bounce within 10 days. Scans daily for new opportunities but never disturbs existing positions.",
+        "what": "Buys S&P 500 + NASDAQ-100 stocks (~517 names) that crash 10–20% over 5 trading days due to forced selling, then bets on a bounce within 10 days. Scans daily for new opportunities but never disturbs existing positions.",
         "edge": "Jegadeesh (1990) documented that 1-week losers outperform 1-week winners by ~1.7%/month. The driver: margin calls, ETF rebalancing, and stop-loss cascades create temporary prices below fair value — not because the company deteriorated. These reverse when the mechanical selling ends.",
         "entry": [
             "5-day return between -10% and -20% (too small = noise; too large = real fundamental problem)",
@@ -1507,7 +1507,7 @@ GUIDE = [
         "key": "s13_pre_earnings_drift",
         "title": "S13 · Pre-Earnings Drift",
         "tags": [("Event-Driven", "event"), ("Earnings", "event"), ("5-Day Hold", "struct")],
-        "what": "Buys high-quality earnings-beaters in the 3–7 trading days before their earnings announcement, then exits the day before to avoid overnight announcement risk. No earnings gap risk.",
+        "what": "Scans S&P 500 + NASDAQ-100 (~517 stocks) for high-quality earnings-beaters in the 3–7 trading days before their earnings announcement, then exits the day before to avoid overnight announcement risk. No earnings gap risk.",
         "edge": "Barber et al. (2013) documents ~1.5–2.5% average return in the 5 days before earnings for consistent earnings-beaters. Institutional investors quietly accumulate positions ahead of announcements they expect to be positive, lifting the price before the news breaks.",
         "entry": [
             "Next earnings date is 3–7 trading days away",
@@ -1573,7 +1573,7 @@ GUIDE = [
         "key": "s17_panic_reversal",
         "title": "S17 · Market Panic Reversal",
         "tags": [("Equity Long", "equity"), ("Mean Reversion", "equity"), ("5-Day Hold", "struct"), ("Empirical", "flow")],
-        "what": "Buys quality large-cap stocks that fell WITH the overall market during a VIX spike — a specific pattern that historically reverts at +1.98% average with 67% win rate within 5 days.",
+        "what": "Scans S&P 500 + NASDAQ-100 (~517 large-caps) for stocks that fell WITH the overall market during a VIX spike — a specific pattern that historically reverts at +1.98% average with 67% win rate within 5 days.",
         "edge": "Built from our own empirical research on 102 stocks over 2 years. Key insight: stocks that crash ALONE on bad news do NOT revert (−0.51% average). But stocks that crash WITH the market during VIX > 25 episodes DO revert (+1.98%, t-stat 8.51). The driver: forced risk-parity deleveraging and ETF redemptions hit quality stocks indiscriminately — not because anything broke. When VIX mean-reverts, these bounce back sharply.",
         "entry": [
             "VIX must be above 20 (elevated fear; indiscriminate selling regime required)",
