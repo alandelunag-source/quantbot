@@ -97,7 +97,8 @@ class PreEarningsDrift(Strategy):
     MIN_SURPRISE_RATE = 0.60  # min % of quarters with positive surprise
 
     def get_universe(self) -> list[str]:
-        return SP100
+        from data.universe import get_large_cap_universe
+        return get_large_cap_universe()
 
     def generate_signals(self, prices: pd.DataFrame, **kwargs) -> pd.DataFrame:
         if prices.empty or len(prices) < 60:
@@ -107,8 +108,6 @@ class PreEarningsDrift(Strategy):
         today = prices.index[-1]
 
         for ticker in prices.columns:
-            if ticker not in SP100:
-                continue
             info = _get_earnings_info(ticker)
 
             next_date = info.get("next_date")

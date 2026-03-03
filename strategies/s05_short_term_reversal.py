@@ -50,8 +50,8 @@ class ShortTermReversal(Strategy):
     TIME_STOP_DAYS = 10     # 10 calendar days max (reversal edge decays after first week)
 
     def get_universe(self) -> list[str]:
-        from data.universe import SP100
-        return SP100
+        from data.universe import get_large_cap_universe
+        return get_large_cap_universe()
 
     def generate_signals(
         self,

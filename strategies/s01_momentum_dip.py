@@ -48,8 +48,8 @@ class MomentumDip(Strategy):
     EXIT_DAYS   = 7
 
     def get_universe(self) -> list[str]:
-        from data.universe import SP100  # Use SP100 as proxy (liquid subset of SP500)
-        return SP100
+        from data.universe import get_large_cap_universe
+        return get_large_cap_universe()
 
     def generate_signals(self, prices: pd.DataFrame, volume: pd.DataFrame = None, **kwargs) -> pd.DataFrame:
         """

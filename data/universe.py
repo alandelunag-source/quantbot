@@ -3,6 +3,61 @@ Ticker universes used by each strategy.
 """
 from __future__ import annotations
 
+import functools
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def _wiki_read_html(url: str) -> list:
+    """Fetch a Wikipedia page and parse HTML tables, using a browser User-Agent."""
+    import io
+    import requests
+    import pandas as pd
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; quantbot/1.0; +research)"}
+    resp = requests.get(url, headers=headers, timeout=15)
+    resp.raise_for_status()
+    return pd.read_html(io.StringIO(resp.text), header=0)
+
+
+@functools.lru_cache(maxsize=1)
+def get_sp500() -> list[str]:
+    """Fetch current S&P 500 constituents from Wikipedia (cached per session)."""
+    try:
+        tbl = _wiki_read_html(
+            "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        )[0]
+        tickers = tbl["Symbol"].str.replace(".", "-", regex=False).dropna().tolist()
+        logger.info("Fetched %d S&P 500 tickers from Wikipedia", len(tickers))
+        return sorted(tickers)
+    except Exception as exc:
+        logger.warning("S&P 500 Wikipedia fetch failed (%s) — falling back to SP100", exc)
+        return list(SP100)
+
+
+@functools.lru_cache(maxsize=1)
+def get_nasdaq100() -> list[str]:
+    """Fetch current NASDAQ-100 constituents from Wikipedia (cached per session)."""
+    try:
+        tables = _wiki_read_html("https://en.wikipedia.org/wiki/Nasdaq-100")
+        for tbl in tables:
+            for col in ("Ticker", "Symbol", "Ticker symbol"):
+                if col in tbl.columns:
+                    tickers = (tbl[col].str.replace(".", "-", regex=False)
+                               .dropna().tolist())
+                    tickers = [t for t in tickers if isinstance(t, str) and len(t) <= 6]
+                    logger.info("Fetched %d NASDAQ-100 tickers from Wikipedia", len(tickers))
+                    return sorted(tickers)
+    except Exception as exc:
+        logger.warning("NASDAQ-100 Wikipedia fetch failed (%s) — falling back to SP100", exc)
+    return list(SP100)
+
+
+@functools.lru_cache(maxsize=1)
+def get_large_cap_universe() -> list[str]:
+    """Union of S&P 500 + NASDAQ-100, deduplicated and sorted (~550 tickers)."""
+    return sorted(set(get_sp500()) | set(get_nasdaq100()))
+
 SP100 = [
     "AAPL","MSFT","AMZN","NVDA","GOOGL","META","TSLA","BRK-B","JPM","JNJ",
     "XOM","V","UNH","PG","MA","HD","CVX","LLY","ABBV","MRK","PEP","AVGO",

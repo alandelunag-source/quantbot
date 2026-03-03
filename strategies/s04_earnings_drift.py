@@ -47,8 +47,8 @@ class EarningsDrift(Strategy):
     PROFIT_TARGET = 0.10   # +10% profit target (PEAD drift typically 5-15%);
 
     def get_universe(self) -> list[str]:
-        from data.universe import SP100
-        return SP100
+        from data.universe import get_large_cap_universe
+        return get_large_cap_universe()
 
     def generate_signals(
         self,

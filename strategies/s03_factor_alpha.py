@@ -47,8 +47,8 @@ class FactorAlpha(Strategy):
     TIME_STOP_DAYS = 60     # 60-day max hold (factor signals decay; refresh or exit)
 
     def get_universe(self) -> list[str]:
-        from data.universe import SP100
-        return SP100
+        from data.universe import get_large_cap_universe
+        return get_large_cap_universe()
 
     def generate_signals(self, prices: pd.DataFrame, **kwargs) -> pd.DataFrame:
         if prices.empty or len(prices) < self.LOOKBACK_MOM + 5:

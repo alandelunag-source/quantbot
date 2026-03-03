@@ -100,7 +100,8 @@ class PanicReversal(Strategy):
     PROFIT_TARGET = 0.025   # take profit at +2.5%
 
     def get_universe(self) -> list[str]:
-        return SP100 + ["SPY"]   # SPY needed for market-relative calc
+        from data.universe import get_large_cap_universe
+        return get_large_cap_universe() + ["SPY"]   # SPY needed for market-relative calc
 
     def generate_signals(self, prices: pd.DataFrame, **kwargs) -> pd.DataFrame:
         if prices.empty or len(prices) < 25:
@@ -135,8 +136,6 @@ class PanicReversal(Strategy):
 
             for ticker in prices.columns:
                 if ticker == "SPY":
-                    continue
-                if ticker not in SP100:
                     continue
 
                 col = prices[ticker]
@@ -179,7 +178,7 @@ class PanicReversal(Strategy):
         #   - profit target: price rose  > PROFIT_TARGET from entry
         # A stronger NEW signal on a later day overwrites the carry.
         for ticker in list(signals.columns):
-            if ticker == "SPY" or ticker not in SP100:
+            if ticker == "SPY":
                 continue
             col_sig   = signals[ticker]
             col_price = prices[ticker] if ticker in prices.columns else None
