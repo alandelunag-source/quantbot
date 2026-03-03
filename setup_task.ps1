@@ -10,7 +10,8 @@ $trigger = New-ScheduledTaskTrigger `
 $settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 30) `
     -StartWhenAvailable `
-    -RunOnlyIfNetworkAvailable
+    -RunOnlyIfNetworkAvailable `
+    -WakeToRun
 
 Register-ScheduledTask `
     -TaskName "Quantbot Daily" `
