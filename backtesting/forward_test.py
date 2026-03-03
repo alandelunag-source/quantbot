@@ -153,11 +153,14 @@ class ForwardTest:
         from data.market_data import get_close, get_volume, get_vix, get_vix9d, get_yield_spread
 
         universe = self.strategy.get_universe()
-        prices_df = get_close(universe, days=300)
-        volume_df = get_volume(universe, days=300)
-        vix      = get_vix(days=300)
-        vix9d    = get_vix9d(days=300)
-        ys       = get_yield_spread(days=300)
+        # Honour per-strategy lookback requirement; default 400 calendar days
+        # (≈280 trading days, enough for strategies needing 252 trading-day lookbacks)
+        days = getattr(self.strategy, "lookback_days", 400)
+        prices_df = get_close(universe, days=days)
+        volume_df = get_volume(universe, days=days)
+        vix      = get_vix(days=days)
+        vix9d    = get_vix9d(days=days)
+        ys       = get_yield_spread(days=days)
 
         if prices_df.empty:
             return
