@@ -35,6 +35,7 @@ import numpy as np
 
 from strategies.base import Strategy
 from data.indicators import momentum, sma
+from data.universe import get_sp500
 
 logger = logging.getLogger(__name__)
 
@@ -162,9 +163,12 @@ class IndexInclusion(Strategy):
 
         # --- Eligibility screening: stocks approaching S&P 500 criteria ---
         if len(prices) >= 252:
+            current_sp500 = set(get_sp500())
             for ticker in prices.columns:
                 if ticker not in RUSSELL_1000_SAMPLE:
                     continue
+                if ticker in current_sp500:
+                    continue  # already in index — no inclusion alpha
                 col = prices[ticker].dropna()
                 if len(col) < 252:
                     continue
