@@ -69,28 +69,23 @@ class ForwardTest:
     # Core daily update
     # ------------------------------------------------------------------
 
-    def update(self, current_prices: dict[str, float], extra_kwargs: dict = None) -> dict:
+    def update(self, current_prices: dict[str, float], session: str = "close", extra_kwargs: dict = None) -> dict:
         """
-        Run one daily update. Idempotent if called twice on the same date.
-        1. Skip if already ran today
-        2. Mark-to-market
-        3. Check drawdown stop
-        4. Generate signals if rebalance due
-        5. Rebalance with proper cash tracking
-        6. Log and persist
+        Run one paper trading update.
+
+        session:
+          "open"   — exit rules only (catches overnight gaps). No rebalance, no daily log.
+          "midday" — exit rules only (catches intraday moves). No rebalance, no daily log.
+          "close"  — full update: exit rules + signal generation + rebalance + daily log.
+
+        Exit rules fire at every session so stop-losses and profit targets trigger intraday.
+        Signal generation and rebalancing happen once per day at the close session.
         """
         today = datetime.today().strftime("%Y-%m-%d")
         extra = extra_kwargs or {}
 
-        # Idempotency: skip if already ran today
-        last_log = self._state["daily_log"][-1] if self._state["daily_log"] else {}
-        if last_log.get("date") == today:
-            logger.debug("[FT:%s] Already ran today (%s), skipping", self.strategy.name, today)
-            return self._summary(today)
-
-        # Mark-to-market
+        # Mark-to-market always
         pv = self._compute_portfolio_value(current_prices)
-        prev_pv = self._state["portfolio_value"]
         self._state["portfolio_value"] = pv
         self._state["peak_value"] = max(self._state["peak_value"], pv)
 
@@ -100,19 +95,23 @@ class ForwardTest:
         if drawdown < -settings.DRAWDOWN_STOP_PCT:
             logger.warning("[FT:%s] Drawdown stop %.1f%% — liquidating", self.strategy.name, drawdown * 100)
             self._liquidate(current_prices, reason="drawdown_stop")
-            self._log_day(today, pv, prev_pv, note="DRAWDOWN_STOP")
+            if session == "close":
+                self._log_day(today, pv, note="DRAWDOWN_STOP")
             self._save_state()
             return self._summary(today)
 
-        # Exit rules (always checked, regardless of rebalance schedule)
+        # Exit rules: fire at every session to catch intraday moves
         self._apply_exit_rules(current_prices, pv, today)
 
-        # Rebalance?
-        if self._should_rebalance(today):
-            self._run_signals_and_rebalance(current_prices, pv, today, extra)
-            self._state["last_rebalance"] = today
+        # Full rebalance + daily log: close session only, once per day
+        if session == "close":
+            last_log = self._state["daily_log"][-1] if self._state["daily_log"] else {}
+            if last_log.get("date") != today:
+                if self._should_rebalance(today):
+                    self._run_signals_and_rebalance(current_prices, pv, today, extra)
+                    self._state["last_rebalance"] = today
+                self._log_day(today, pv)
 
-        self._log_day(today, pv, prev_pv)
         self._save_state()
         return self._summary(today)
 
@@ -303,7 +302,9 @@ class ForwardTest:
             return now_dt.month != last_dt.month
         return True
 
-    def _log_day(self, today: str, pv: float, prev_pv: float, note: str = "") -> None:
+    def _log_day(self, today: str, pv: float, note: str = "") -> None:
+        log = self._state["daily_log"]
+        prev_pv = log[-1]["pv"] if log else self.capital
         ret_pct = (pv - prev_pv) / prev_pv if prev_pv else 0.0
         self._state["daily_log"].append({
             "date": today,

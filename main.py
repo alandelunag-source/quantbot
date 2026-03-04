@@ -150,7 +150,7 @@ def cmd_paper(args: argparse.Namespace) -> None:
 
     if args.once:
         # Single daily update — designed for Task Scheduler / cron
-        _paper_run_once(forward_tests, tracker)
+        _paper_run_once(forward_tests, tracker, session=args.session)
     else:
         # Daemon: sleeps and wakes up once per trading day at ~4pm
         print(f"Paper trading daemon started for: {[s.name for s in strategies]}")
@@ -171,8 +171,8 @@ def cmd_paper(args: argparse.Namespace) -> None:
             cmd_status(args)
 
 
-def _paper_run_once(forward_tests, tracker) -> None:
-    """Execute one daily paper trading update across all strategies."""
+def _paper_run_once(forward_tests, tracker, session: str = "close") -> None:
+    """Execute one paper trading update across all strategies for the given session."""
     from backtesting.forward_test import is_trading_day
 
     today = datetime.today().strftime("%Y-%m-%d")
@@ -181,8 +181,9 @@ def _paper_run_once(forward_tests, tracker) -> None:
         print(f"[{today}] Not a trading day — skipping.")
         return
 
+    session_label = {"open": "OPEN", "midday": "MIDDAY", "close": "CLOSE"}.get(session, session.upper())
     print(f"\n{'='*56}")
-    print(f"  PAPER TRADING UPDATE  {today}")
+    print(f"  PAPER TRADING  {today}  [{session_label}]")
     print(f"{'='*56}")
 
     strategy_values = {}
@@ -192,7 +193,7 @@ def _paper_run_once(forward_tests, tracker) -> None:
         if not prices:
             print(f"  [{ft.strategy.name}] No price data — skipping")
             continue
-        summary = ft.update(prices)
+        summary = ft.update(prices, session=session)
         ft.print_status()
         strategy_values[ft.strategy.name] = summary["portfolio_value"]
 
@@ -201,8 +202,9 @@ def _paper_run_once(forward_tests, tracker) -> None:
         tracker.update(today, agg_value, strategy_values)
         tracker.print_dashboard()
 
-    # Append to CSV log for 1-month review
-    _append_csv_log(today, strategy_values)
+    # Append to CSV log and run review only at close session
+    if session == "close":
+        _append_csv_log(today, strategy_values)
 
 
 def _append_csv_log(today: str, strategy_values: dict) -> None:
@@ -263,6 +265,8 @@ def main() -> None:
     paper_p.add_argument("--strategy", help="Single strategy code (e.g. s09)")
     paper_p.add_argument("--strategies", help="Comma-separated strategy codes (e.g. s09,s02,s06)")
     paper_p.add_argument("--once", action="store_true", help="Run one daily update and exit (for Task Scheduler)")
+    paper_p.add_argument("--session", choices=["open", "midday", "close"], default="close",
+                         help="Trading session: open/midday = exit checks only; close = full update (default)")
 
     # status
     status_p = sub.add_parser("status", help="Current positions + P&L")
