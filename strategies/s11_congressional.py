@@ -12,23 +12,25 @@ Alpha thesis:
   they expect to benefit from those decisions.
 
 Signal logic:
-  1. Fetch all House + Senate disclosures (free JSON from housestockwatcher.com)
-  2. Filter for PURCHASES (not sales — sales are often diversification)
+  1. Fetch all House + Senate disclosures via FMP API (financialmodelingprep.com)
+  2. Filter for PURCHASES of Stocks only (not sales, bonds, ETFs)
   3. Score by: recency (fresher = stronger), number of distinct politicians buying,
-     aggregate dollar size
-  4. Universe: any US-listed stock with disclosure in last 30 days
+     aggregate dollar size, Senate > House bonus
+  4. Universe: any ticker disclosed in last 30 days
   5. Rank by composite score, go long top N
 
-Novel twist: weight by seniority / committee relevance when available.
-Senators on Banking Committee buying financials = stronger signal.
+Data source: Financial Modeling Prep /stable/senate-latest and /stable/house-latest
+  (free tier, 250 req/day — well within budget at 3 sessions/day)
 
 Rebalance: daily (new disclosures arrive any day).
-Hold: 30 days per position.
+Hold: up to 60 days per position.
 """
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta
+from functools import lru_cache
 
 import pandas as pd
 import numpy as np
@@ -37,133 +39,151 @@ from strategies.base import Strategy
 
 logger = logging.getLogger(__name__)
 
-HOUSE_URL = (
-    "https://house-stock-watcher-data.s3-us-east-2.amazonaws.com"
-    "/data/all_transactions.json"
-)
-SENATE_URL = (
-    "https://senate-stock-watcher-data.s3-us-east-2.amazonaws.com"
-    "/aggregate/all_transactions.json"
-)
+# Cache disclosures for the session to avoid redundant API calls
+_disclosure_cache: dict = {}
+_cache_date: str = ""
+
+
+def _fmp_key() -> str:
+    key = os.environ.get("FMP_API_KEY", "")
+    if not key:
+        # Try loading from .env manually (no python-dotenv required)
+        try:
+            env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+            with open(env_path) as f:
+                for line in f:
+                    if line.startswith("FMP_API_KEY="):
+                        key = line.strip().split("=", 1)[1]
+                        break
+        except Exception:
+            pass
+    return key
 
 
 def _fetch_disclosures(days_back: int = 45) -> pd.DataFrame:
-    """Fetch and normalize House + Senate disclosures."""
+    """Fetch recent House + Senate stock purchase disclosures via FMP API."""
+    global _disclosure_cache, _cache_date
+
+    today = datetime.today().strftime("%Y-%m-%d")
+    if _cache_date == today and _disclosure_cache.get(days_back) is not None:
+        return _disclosure_cache[days_back]
+
     import requests
-
-    records = []
-    cutoff = datetime.today() - timedelta(days=days_back)
-
-    for url, chamber in [(HOUSE_URL, "house"), (SENATE_URL, "senate")]:
-        try:
-            resp = requests.get(url, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-            if isinstance(data, dict):
-                data = data.get("data", [])
-            for row in data:
-                # Normalize disclosure_date
-                disc_str = row.get("disclosure_date") or row.get("disclosure_year") or ""
-                try:
-                    disc_date = pd.to_datetime(disc_str, errors="coerce")
-                except Exception:
-                    continue
-                if pd.isna(disc_date) or disc_date < cutoff:
-                    continue
-                ticker = (row.get("ticker") or "").strip().upper()
-                tx_type = (row.get("type") or row.get("transaction_type") or "").lower()
-                if not ticker or len(ticker) > 5:
-                    continue
-                records.append({
-                    "disclosure_date": disc_date,
-                    "ticker": ticker,
-                    "type": tx_type,
-                    "chamber": chamber,
-                    "amount": row.get("amount") or "",
-                })
-        except Exception as exc:
-            logger.warning("[Congressional] %s fetch failed: %s", chamber, exc)
-
-    if not records:
+    key = _fmp_key()
+    if not key:
+        logger.warning("[Congressional] FMP_API_KEY not set — skipping S11")
         return pd.DataFrame()
-    return pd.DataFrame(records)
+
+    cutoff = datetime.today() - timedelta(days=days_back)
+    records = []
+
+    for chamber, endpoint in [("senate", "senate-latest"), ("house", "house-latest")]:
+        for page in range(1):  # free tier: page 0 only (100 records per chamber)
+            try:
+                url = f"https://financialmodelingprep.com/stable/{endpoint}?page={page}&apikey={key}"
+                resp = requests.get(url, timeout=15)
+                resp.raise_for_status()
+                data = resp.json()
+                if not data:
+                    break
+                for row in data:
+                    # Only stocks, only purchases
+                    if row.get("assetType", "").lower() not in ("stock", "stocks"):
+                        continue
+                    tx_type = row.get("type", "").lower()
+                    if "purchase" not in tx_type and "buy" not in tx_type:
+                        continue
+                    disc_date = pd.to_datetime(row.get("disclosureDate"), errors="coerce")
+                    if pd.isna(disc_date) or disc_date < cutoff:
+                        continue
+                    ticker = (row.get("symbol") or "").strip().upper()
+                    if not ticker or len(ticker) > 5:
+                        continue
+                    records.append({
+                        "disclosure_date": disc_date,
+                        "transaction_date": pd.to_datetime(row.get("transactionDate"), errors="coerce"),
+                        "ticker": ticker,
+                        "chamber": chamber,
+                        "amount": row.get("amount", ""),
+                        "politician": f"{row.get('firstName','')} {row.get('lastName','')}".strip(),
+                    })
+                # If we got fewer than 100 records, no more pages
+                if len(data) < 100:
+                    break
+            except Exception as exc:
+                logger.warning("[Congressional] FMP %s page %d failed: %s", chamber, page, exc)
+                break
+
+    df = pd.DataFrame(records) if records else pd.DataFrame()
+    _disclosure_cache[days_back] = df
+    _cache_date = today
+    return df
 
 
 def _amount_to_score(amount_str: str) -> float:
-    """Convert STOCK Act amount range to a rough dollar midpoint score (normalized)."""
+    """Convert STOCK Act amount range to a rough dollar midpoint score."""
     mapping = {
-        "$1,001 - $15,000": 8_000,
-        "$15,001 - $50,000": 32_500,
-        "$50,001 - $100,000": 75_000,
-        "$100,001 - $250,000": 175_000,
-        "$250,001 - $500,000": 375_000,
+        "$1,001 - $15,000":       8_000,
+        "$15,001 - $50,000":     32_500,
+        "$50,001 - $100,000":    75_000,
+        "$100,001 - $250,000":  175_000,
+        "$250,001 - $500,000":  375_000,
         "$500,001 - $1,000,000": 750_000,
         "$1,000,001 - $5,000,000": 3_000_000,
-        "over $5,000,000": 7_500_000,
+        "over $5,000,000":       7_500_000,
     }
+    s = str(amount_str).lower()
     for key, val in mapping.items():
-        if key.lower() in amount_str.lower():
+        if key.lower() in s:
             return float(val)
-    return 10_000.0  # default
+    return 10_000.0
 
 
 class CongressionalTrades(Strategy):
     name = "s11_congressional"
     rebalance_freq = "daily"
     max_positions  = 10
-    LOOKBACK_DAYS  = 30    # how far back to consider disclosures
+    LOOKBACK_DAYS  = 30
 
-    STOP_LOSS      = 0.05  # -5%: congressional alpha thesis failed; exit before it compounds
-    PROFIT_TARGET  = 0.15  # +15%: congress members average ~15% excess return (Ziobrowski 2011)
-    TIME_STOP_DAYS = 60    # 60-day hold max (disclosure-to-full-reprice window)
+    STOP_LOSS      = 0.05   # -5%
+    PROFIT_TARGET  = 0.15   # +15% (avg congressional excess return, Ziobrowski 2011)
+    TIME_STOP_DAYS = 60     # 60-day hold max
 
     def get_universe(self) -> list[str]:
-        # Universe is dynamic — derived from disclosures
-        # Return a minimal static list as fallback for data fetching
-        return ["SPY"]  # placeholder; real universe built in generate_signals
+        """Dynamically return tickers from recent congressional purchases."""
+        try:
+            df = _fetch_disclosures(days_back=self.LOOKBACK_DAYS + 10)
+            if not df.empty and "ticker" in df.columns:
+                tickers = df["ticker"].dropna().unique().tolist()
+                if tickers:
+                    logger.info("[Congressional] Universe: %d tickers from disclosures", len(tickers))
+                    return tickers
+        except Exception as exc:
+            logger.warning("[Congressional] get_universe failed: %s", exc)
+        return ["SPY"]  # fallback — signals will be empty but won't crash
 
     def generate_signals(self, prices: pd.DataFrame, **kwargs) -> pd.DataFrame:
-        """
-        For backtesting: simulate using lagged disclosure dates embedded in prices.
-        For live: fetch live disclosures, score, return today's signals.
-        """
         if prices.empty:
             return pd.DataFrame()
 
-        # Try live fetch
-        try:
-            disclosures = _fetch_disclosures(days_back=self.LOOKBACK_DAYS + 10)
-        except Exception as exc:
-            logger.warning("[Congressional] Disclosure fetch failed: %s", exc)
-            return pd.DataFrame()
-
+        disclosures = _fetch_disclosures(days_back=self.LOOKBACK_DAYS + 10)
         if disclosures.empty:
-            logger.info("[Congressional] No recent disclosures found.")
+            logger.info("[Congressional] No recent disclosures.")
             return pd.DataFrame()
 
-        # Filter purchases only
-        purchases = disclosures[
-            disclosures["type"].str.contains("purchase|buy", na=False)
-        ].copy()
-
-        if purchases.empty:
-            return pd.DataFrame()
-
-        # Score: recency × size × count
         today = datetime.today()
-        purchases["days_old"] = (today - purchases["disclosure_date"]).dt.days.clip(lower=1)
-        purchases["recency_score"] = np.exp(-purchases["days_old"] / 15.0)  # half-life 15 days
-        purchases["size_score"] = purchases["amount"].apply(_amount_to_score).apply(np.log1p)
-        purchases["senate_bonus"] = (purchases["chamber"] == "senate").astype(float) * 0.5
+        disclosures["days_old"] = (today - disclosures["disclosure_date"]).dt.days.clip(lower=1)
+        disclosures["recency_score"] = np.exp(-disclosures["days_old"] / 15.0)
+        disclosures["size_score"]    = disclosures["amount"].apply(_amount_to_score).apply(np.log1p)
+        disclosures["senate_bonus"]  = (disclosures["chamber"] == "senate").astype(float) * 0.5
 
-        purchases["score"] = (
-            purchases["recency_score"] * (1 + purchases["senate_bonus"])
-            + purchases["size_score"] / 20.0
+        disclosures["score"] = (
+            disclosures["recency_score"] * (1 + disclosures["senate_bonus"])
+            + disclosures["size_score"] / 20.0
         )
 
-        # Aggregate per ticker
         ticker_scores = (
-            purchases.groupby("ticker")["score"]
+            disclosures.groupby("ticker")["score"]
             .agg(["sum", "count"])
             .rename(columns={"sum": "total_score", "count": "n_politicians"})
         )
@@ -171,21 +191,17 @@ class CongressionalTrades(Strategy):
             ticker_scores["total_score"] * np.log1p(ticker_scores["n_politicians"])
         )
 
-        # Filter to tickers that exist in our price data
+        # Filter to tickers present in price data
         valid = [t for t in ticker_scores.index if t in prices.columns]
         if not valid:
-            # Return signal for any ticker, but create minimal frame
-            logger.info("[Congressional] Top tickers: %s", ticker_scores.nlargest(5, "final_score").index.tolist())
+            logger.info("[Congressional] No disclosed tickers in price data. Top picks: %s",
+                        ticker_scores.nlargest(5, "final_score").index.tolist())
             return pd.DataFrame()
 
-        ticker_scores = ticker_scores.loc[valid]
-
-        # Build signal DataFrame aligned to prices
         signals = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
-        top = ticker_scores.nlargest(self.max_positions, "final_score")
+        top = ticker_scores.loc[valid].nlargest(self.max_positions, "final_score")
         for ticker in top.index:
-            if ticker in signals.columns:
-                signals[ticker] = top.loc[ticker, "final_score"]
+            signals[ticker] = top.loc[ticker, "final_score"]
 
         return signals
 
@@ -197,11 +213,5 @@ class CongressionalTrades(Strategy):
         return self._sized_weights(longs, prices=prices, max_deploy=0.85, max_weight=0.15)
 
     def exit_rules(self, entry_price: float, current_price: float, days_held: int) -> bool:
-        """
-        Exit when:
-          - Stop-loss: -5% (mimic is wrong or politician was hedging; don't follow bad intel)
-          - Profit target: +15% (avg congressional excess return per Ziobrowski 2011; lock in)
-          - Time stop: 60 days (disclosure lag + repricing window typically exhausted)
-        """
         ret = (current_price - entry_price) / entry_price
         return ret <= -self.STOP_LOSS or ret >= self.PROFIT_TARGET or days_held >= self.TIME_STOP_DAYS
