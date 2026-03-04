@@ -41,20 +41,10 @@ logger = logging.getLogger(__name__)
 
 # Known recent S&P 500 additions (fallback when Wikipedia parse fails)
 # Format: (ticker, announcement_date, effective_date)
-KNOWN_ADDITIONS = [
-    ("DELL", "2024-09-06", "2024-09-23"),
-    ("PLTR", "2024-09-06", "2024-09-23"),
-    ("ERIE", "2024-09-06", "2024-09-23"),
-    ("KKR",  "2024-10-01", "2024-10-18"),
-    ("GEV",  "2024-11-01", "2024-11-08"),
-    ("AXON", "2024-11-08", "2024-11-22"),
-    ("SPOT", "2024-11-15", "2024-12-23"),
-    ("CBOE", "2024-11-15", "2024-12-23"),
-    ("APP",  "2024-12-06", "2024-12-23"),
-    ("CRWD", "2024-12-06", "2024-12-23"),
-    ("VST",  "2024-09-20", "2024-09-20"),
-    ("GDDY", "2025-01-17", "2025-02-03"),
-    ("TWLO", "2025-03-01", "2025-03-21"),
+# Keep only additions with effective dates within the last ~90 days or upcoming.
+# Purge stale entries when effective_date is more than 90 days in the past.
+KNOWN_ADDITIONS: list[tuple[str, str, str]] = [
+    # Add new entries here as S&P 500 announcements are made
 ]
 
 # Universe for eligibility screening
