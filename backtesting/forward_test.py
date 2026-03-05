@@ -178,18 +178,19 @@ class ForwardTest:
                 self.strategy.name, ticker, entry_price, current_price, gain * 100,
             )
 
-            # Record SELL (realized gain)
+            weight = pos.get("weight", 0.0)
+            # Record SELL — use actual weight so dashboard lifecycle tracker sees a full close
             self._state["trades"].append({
                 "date": today, "ticker": ticker,
-                "action": "SELL", "delta_weight": 0.0,
+                "action": "SELL", "delta_weight": weight,
                 "dollar_value": round(dollar_value, 2),
                 "cost": round(cost / 2, 4),
                 "note": f"profit_lock +{gain:.1%}",
             })
-            # Record BUY (re-enter at current price)
+            # Record BUY — fresh cost basis at current price for next leg
             self._state["trades"].append({
                 "date": today, "ticker": ticker,
-                "action": "BUY", "delta_weight": 0.0,
+                "action": "BUY", "delta_weight": weight,
                 "dollar_value": round(dollar_value, 2),
                 "cost": round(cost / 2, 4),
                 "note": "profit_lock re-entry",
