@@ -11,7 +11,6 @@ from strategies.s12_index_inclusion import IndexInclusion
 from strategies.s13_pre_earnings_drift import PreEarningsDrift
 from strategies.s14_gamma_wall import GammaWall
 from strategies.s15_short_flow import ShortFlow
-from strategies.s16_overnight_carry import OvernightCarry
 from strategies.s17_panic_reversal import PanicReversal
 
 ALL_STRATEGIES = {
@@ -27,7 +26,6 @@ ALL_STRATEGIES = {
     "s13": PreEarningsDrift,
     "s14": GammaWall,
     "s15": ShortFlow,
-    "s16": OvernightCarry,
     "s17": PanicReversal,
 }
 # S08 is an overlay — instantiated separately
