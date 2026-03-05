@@ -13,7 +13,7 @@ echo ======================================================== >> state\paper_tra
 :: Unset nested-session guard so claude can run from scheduler or manually
 set CLAUDECODE=
 
-C:\Users\aland\.local\bin\claude.exe --dangerously-skip-permissions -p ^
+%USERPROFILE%\.local\bin\claude.exe --dangerously-skip-permissions -p ^
 "You are the autonomous daily reviewer for the quantbot paper trading system. Today is %TODAY%. ^
 Do the following in order: ^
 1. Run `venv\Scripts\python.exe main.py status` to get live MTM portfolio values. ^

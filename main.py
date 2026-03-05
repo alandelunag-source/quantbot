@@ -27,13 +27,25 @@ from monitoring.performance import PerformanceTracker
 from config import settings
 
 
-def _setup_logging(verbose: bool = False) -> None:
+def _setup_logging(verbose: bool = False, logfile: str | None = "state/paper_trading.log") -> None:
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    fmt = logging.Formatter("%(asctime)s  %(levelname)-8s  %(name)s  %(message)s", datefmt="%H:%M:%S")
+
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    # Console handler
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setFormatter(fmt)
+    root.addHandler(ch)
+
+    # File handler — Python opens in append mode with proper Windows-safe locking
+    if logfile:
+        import os
+        os.makedirs(os.path.dirname(logfile), exist_ok=True)
+        fh = logging.FileHandler(logfile, mode="a", encoding="utf-8", delay=False)
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
 
 
 def _get_strategy(code: str):
@@ -274,7 +286,9 @@ def main() -> None:
     status_p.add_argument("--strategies", help="Comma-separated strategy codes (e.g. s09,s02,s06)")
 
     args = parser.parse_args()
-    _setup_logging(args.verbose)
+    # Log to file only for paper sessions; scan/backtest/status just use console
+    logfile = "state/paper_trading.log" if args.command == "paper" else None
+    _setup_logging(args.verbose, logfile=logfile)
 
     if args.command == "scan":
         cmd_scan(args)
