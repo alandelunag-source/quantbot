@@ -31,6 +31,11 @@ class Strategy(ABC):
     MAX_DEPLOY: float = 0.95   # max fraction of portfolio to invest (keep 5% reserve)
     MAX_WEIGHT: float = 0.20   # max single-name weight
 
+    # Profit lock: if set, realized gains are locked and position re-entered at current price.
+    # Useful for monthly/weekly strategies to capture early upside without waiting for rebalance.
+    # Set to None to disable (default). Example: PROFIT_LOCK = 0.05 locks gains at +5%.
+    PROFIT_LOCK: float | None = None
+
     @property
     @abstractmethod
     def name(self) -> str: ...

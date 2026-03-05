@@ -103,6 +103,9 @@ class ForwardTest:
         # Exit rules: fire at every session to catch intraday moves
         self._apply_exit_rules(current_prices, pv, today)
 
+        # Profit lock: reset entry price when gain threshold exceeded (e.g. monthly strategies)
+        self._apply_profit_lock(current_prices, pv, today)
+
         # Full rebalance + daily log: close session only, once per day
         if session == "close":
             last_log = self._state["daily_log"][-1] if self._state["daily_log"] else {}
@@ -141,6 +144,64 @@ class ForwardTest:
                 )
         if exit_weights:
             self._rebalance(exit_weights, current_prices, portfolio_value, today)
+
+    def _apply_profit_lock(
+        self,
+        current_prices: dict[str, float],
+        portfolio_value: float,
+        today: str,
+    ) -> None:
+        """
+        If the strategy has PROFIT_LOCK set, check each position for gains exceeding
+        that threshold. When triggered: record SELL + BUY pair at current price,
+        resetting entry_price and entry_date. The position size (shares/weight) is
+        unchanged — only the cost basis resets.
+        """
+        threshold = getattr(self.strategy, "PROFIT_LOCK", None)
+        if threshold is None:
+            return
+
+        for ticker, pos in list(self._state["positions"].items()):
+            entry_price   = pos["entry_price"]
+            current_price = current_prices.get(ticker, entry_price)
+            if entry_price <= 0:
+                continue
+            gain = (current_price - entry_price) / entry_price
+            if gain < threshold:
+                continue
+
+            dollar_value = current_price * pos["shares"]
+            cost         = dollar_value * settings.TOTAL_COST_PCT * 2  # round-trip
+
+            logger.info(
+                "[FT:%s] profit_lock triggered for %s (entry=%.2f, now=%.2f, gain=+%.1f%%)",
+                self.strategy.name, ticker, entry_price, current_price, gain * 100,
+            )
+
+            # Record SELL (realized gain)
+            self._state["trades"].append({
+                "date": today, "ticker": ticker,
+                "action": "SELL", "delta_weight": 0.0,
+                "dollar_value": round(dollar_value, 2),
+                "cost": round(cost / 2, 4),
+                "note": f"profit_lock +{gain:.1%}",
+            })
+            # Record BUY (re-enter at current price)
+            self._state["trades"].append({
+                "date": today, "ticker": ticker,
+                "action": "BUY", "delta_weight": 0.0,
+                "dollar_value": round(dollar_value, 2),
+                "cost": round(cost / 2, 4),
+                "note": "profit_lock re-entry",
+            })
+
+            # Deduct round-trip cost from cash, reset cost basis
+            self._state["cash"] -= cost
+            self._state["positions"][ticker] = {
+                **pos,
+                "entry_price": current_price,
+                "entry_date":  today,
+            }
 
     def _run_signals_and_rebalance(
         self,

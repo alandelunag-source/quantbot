@@ -42,6 +42,7 @@ class DollarCarry(Strategy):
     name = "s09_dollar_carry"
     rebalance_freq = "monthly"
     max_positions = 4
+    PROFIT_LOCK   = 0.05   # lock gains and reset cost basis at +5% intra-month
 
     MOM_SHORT = 20     # short-term USD momentum window (trading days)
     MOM_LONG  = 60     # long-term USD momentum window

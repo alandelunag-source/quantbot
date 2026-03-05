@@ -31,6 +31,7 @@ class CrossAssetMomentum(Strategy):
     name = "s02_cross_asset_mom"
     rebalance_freq = "monthly"
     max_positions = 3
+    PROFIT_LOCK   = 0.05   # lock gains and reset cost basis at +5% intra-month
 
     SAFE_HAVEN = "SHY"
     N_TOP = 3
