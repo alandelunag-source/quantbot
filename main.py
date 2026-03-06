@@ -162,7 +162,12 @@ def cmd_paper(args: argparse.Namespace) -> None:
 
     if args.once:
         # Single daily update — designed for Task Scheduler / cron
-        _paper_run_once(forward_tests, tracker, session=args.session)
+        if not _acquire_paper_lock(args.session):
+            sys.exit(0)  # another instance running — exit cleanly
+        try:
+            _paper_run_once(forward_tests, tracker, session=args.session)
+        finally:
+            _release_paper_lock()
     else:
         # Daemon: sleeps and wakes up once per trading day at ~4pm
         print(f"Paper trading daemon started for: {[s.name for s in strategies]}")
@@ -181,6 +186,54 @@ def cmd_paper(args: argparse.Namespace) -> None:
         except KeyboardInterrupt:
             print("\nStopping. Final status:")
             cmd_status(args)
+
+
+_LOCK_FILE = "state/paper_trading.lock"
+
+
+def _acquire_paper_lock(session: str) -> bool:
+    """
+    Write a PID lockfile. Returns True if acquired, False if another instance is running.
+    Stale locks (process dead or >60 min old) are auto-removed.
+    """
+    import os
+    import time as _time
+
+    lock = _LOCK_FILE
+    if os.path.exists(lock):
+        try:
+            age = _time.time() - os.path.getmtime(lock)
+            with open(lock) as f:
+                pid = int(f.read().strip())
+            # Check if that PID is alive (Windows: os.kill with signal 0 raises if dead)
+            import signal
+            try:
+                os.kill(pid, 0)
+                alive = True
+            except (OSError, ProcessLookupError):
+                alive = False
+            if alive and age < 3600:
+                logging.getLogger(__name__).warning(
+                    "[paper] Another instance (PID %d, %.0f min old) already running — "
+                    "skipping %s session.", pid, age / 60, session
+                )
+                return False
+        except Exception:
+            pass
+        os.remove(lock)  # stale or unreadable lock
+
+    os.makedirs(os.path.dirname(lock), exist_ok=True)
+    with open(lock, "w") as f:
+        f.write(str(os.getpid()))
+    return True
+
+
+def _release_paper_lock() -> None:
+    import os
+    try:
+        os.remove(_LOCK_FILE)
+    except FileNotFoundError:
+        pass
 
 
 def _paper_run_once(forward_tests, tracker, session: str = "close") -> None:

@@ -24,7 +24,8 @@ foreach ($s in $sessions) {
         -ExecutionTimeLimit (New-TimeSpan -Minutes 30) `
         -StartWhenAvailable `
         -RunOnlyIfNetworkAvailable `
-        -WakeToRun
+        -WakeToRun `
+        -MultipleInstances IgnoreNew
 
     Register-ScheduledTask `
         -TaskName $s.Name `
