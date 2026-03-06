@@ -5,11 +5,6 @@ cd /d C:\Users\aland\quantbot
 for /f "tokens=2 delims==" %%I in ('wmic os get localdatetime /value') do set DT=%%I
 set TODAY=%DT:~0,4%-%DT:~4,2%-%DT:~6,2%
 
-echo. >> state\paper_trading.log
-echo ======================================================== >> state\paper_trading.log
-echo   AUTONOMOUS REVIEW  %TODAY% >> state\paper_trading.log
-echo ======================================================== >> state\paper_trading.log
-
 :: Unset nested-session guard so claude can run from scheduler or manually
 set CLAUDECODE=
 
@@ -27,6 +22,4 @@ Do the following in order: ^
    ## Watch Tomorrow (1-2 lines on what to monitor) ^
    Sign off as 'Claude (autonomous reviewer) — %TODAY%'. ^
 5. Append a 3-line plain-text summary (no markdown) to state/paper_trading.log." ^
---allowedTools "Bash Read Write Glob Grep" >> state\paper_trading.log 2>&1
-
-echo Review complete. See state\daily_review_%TODAY%.md >> state\paper_trading.log
+--allowedTools "Bash Read Write Glob Grep"
