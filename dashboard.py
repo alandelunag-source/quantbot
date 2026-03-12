@@ -14,6 +14,7 @@ import plotly.express as px
 import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
+from config import settings
 
 # ── Constants & config ────────────────────────────────────────────────────────
 STATE_DIR   = Path(__file__).parent / "state"
@@ -24,7 +25,8 @@ STRATEGIES  = [
     "s04_earnings_drift", "s05_short_term_reversal", "s06_vix_term_structure",
     "s07_macro_regime", "s09_dollar_carry", "s10_vol_surface",
     "s11_congressional", "s12_index_inclusion", "s13_pre_earnings_drift",
-    "s14_gamma_wall", "s15_short_flow", "s16_overnight_carry", "s17_panic_reversal",
+    "s14_gamma_wall", "s15_short_flow", "s16_overnight_carry",
+    "s19_turn_of_month",
 ]
 
 LABELS = {
@@ -43,7 +45,7 @@ LABELS = {
     "s14_gamma_wall":          "S14 · Gamma Wall",
     "s15_short_flow":          "S15 · Short Flow",
     "s16_overnight_carry":     "S16 · Overnight Carry",
-    "s17_panic_reversal":      "S17 · Panic Reversal",
+    "s19_turn_of_month":       "S19 · Turn-of-Month",
 }
 
 SHORT = {k: v.split(" · ")[1] for k, v in LABELS.items()}
@@ -278,10 +280,12 @@ def fetch_current_prices(tickers: tuple) -> dict[str, float]:
         return {}
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=120)
 def fetch_spy(start: str, end: str) -> pd.Series:
     try:
         raw = yf.download("SPY", start=start, end=end, auto_adjust=True, progress=False)
+        if raw.empty:
+            return pd.Series(dtype=float)
         close = raw["Close"]
         # yfinance returns MultiIndex columns for single ticker — flatten
         if isinstance(close, pd.DataFrame):
@@ -290,7 +294,11 @@ def fetch_spy(start: str, end: str) -> pd.Series:
         # squeeze() on 1-row DataFrame gives scalar — wrap back into Series
         if not isinstance(sq, pd.Series):
             sq = pd.Series([float(sq)], index=raw.index)
-        return sq.dropna()
+        result = sq.dropna()
+        # Return empty if we got fewer than 2 points (can't compute returns)
+        if len(result) < 2:
+            return pd.Series(dtype=float)
+        return result
     except Exception:
         return pd.Series(dtype=float)
 
@@ -304,6 +312,14 @@ def equity_curves(states: dict) -> pd.DataFrame:
         return pd.DataFrame(columns=["date", "strategy", "pv"])
     df = pd.DataFrame(rows)
     df["date"] = pd.to_datetime(df["date"])
+    # De-duplicate (keep last entry per strategy per date) then forward-fill
+    # so strategies that didn't log on a given day retain their prior value.
+    piv = (df.sort_values("date")
+             .groupby(["date", "strategy"])["pv"].last()
+             .unstack("strategy")
+             .ffill())
+    df = piv.stack("strategy").reset_index()
+    df.columns = ["date", "strategy", "pv"]
     return df.sort_values("date")
 
 
@@ -315,7 +331,7 @@ def build_summary(states: dict, spy_series: pd.Series) -> pd.DataFrame:
         positions = st_.get("positions", {})
         trades    = st_.get("trades", [])
         daily     = st_.get("daily_log", [])
-        start_dt  = st_.get("start_date", "")[:10]
+        start_dt = start_d  # always compare vs SPY from global inception date (Feb 24)
 
         total_ret = (pv / START_CASH - 1) * 100
 
@@ -544,9 +560,9 @@ with k5:
 st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_ov, tab_eq, tab_bench, tab_pos, tab_trades, tab_guide = st.tabs([
+tab_ov, tab_eq, tab_bench, tab_pos, tab_trades, tab_pnl, tab_guide = st.tabs([
     "  Overview  ", "  Equity Curves  ", "  Benchmark vs SPY  ",
-    "  Positions  ", "  Trades  ", "  Strategy Guide  ",
+    "  Positions  ", "  Trades  ", "  P&L Breakdown  ", "  Strategy Guide  ",
 ])
 
 filt_keys    = [k for k, v in LABELS.items() if v in selected and k in states]
@@ -972,7 +988,7 @@ with tab_pos:
                 "Ticker":     ticker,
                 "Weight %":   p["weight"] * 100,
                 "Entry $":    p["entry_price"],
-                "Shares":     p["shares"],
+                "Shares":     p.get("shares"),
                 "Notional $": p["weight"] * pv,
                 "Entry Date": p.get("entry_date", ""),
             })
@@ -1090,10 +1106,17 @@ with tab_trades:
 
             elif action == "SELL" and ticker in trackers and trackers[ticker]["weight"] >= 0.001:
                 tr = trackers[ticker]
-                sell_frac     = min(1.0, delta_w / tr["weight"])
-                cost_portion  = tr["basis"] * sell_frac   # proportional cost basis released
-                tr["basis"]          = max(0.0, tr["basis"] - cost_portion)
-                tr["weight"]         = max(0.0, tr["weight"] - delta_w)
+                remaining_weight = max(0.0, tr["weight"] - delta_w)
+                if remaining_weight < 0.005:
+                    # Final close — consume all remaining basis so the full loss/gain is captured
+                    cost_portion = tr["basis"]
+                    tr["basis"]  = 0.0
+                    tr["weight"] = 0.0
+                else:
+                    sell_frac    = min(1.0, delta_w / tr["weight"])
+                    cost_portion = tr["basis"] * sell_frac
+                    tr["basis"]  = max(0.0, tr["basis"] - cost_portion)
+                    tr["weight"] = remaining_weight
                 tr["total_proceeds"] += notional
                 tr["total_pnl"]      += notional - cost_portion - cost
 
@@ -1181,11 +1204,14 @@ with tab_trades:
 
         # ── KPI row ──────────────────────────────────────────────────────────
         total_unreal   = open_td["Unreal $"].dropna().sum()
-        total_realized = closed_td["Real $"].dropna().sum()
-        n_wins  = int((closed_td["Real $"].dropna() > 0).sum())
-        n_loss  = int((closed_td["Real $"].dropna() < 0).sum())
+        real_series    = closed_td["Real $"].dropna()
+        gross_profit   = real_series[real_series > 0].sum()
+        gross_loss     = real_series[real_series < 0].sum()
+        total_realized = gross_profit + gross_loss
+        n_wins  = int((real_series > 0).sum())
+        n_loss  = int((real_series < 0).sum())
 
-        ka, kb, kc, kd = st.columns(4)
+        ka, kb, kc, kd, ke = st.columns(5)
         with ka:
             st.markdown(card("Open Positions", str(len(open_td)), None, 0),
                         unsafe_allow_html=True)
@@ -1195,14 +1221,18 @@ with tab_trades:
                              f"{'▲' if total_unreal>=0 else '▼'} ${abs(total_unreal):,.0f}",
                              None, sign), unsafe_allow_html=True)
         with kc:
+            st.markdown(card("Realized Gains",
+                             f"▲ ${gross_profit:,.0f}",
+                             f"{n_wins}W", 1), unsafe_allow_html=True)
+        with kd:
+            st.markdown(card("Realized Losses",
+                             f"▼ ${abs(gross_loss):,.0f}",
+                             f"{n_loss}L", -1 if gross_loss < 0 else 0), unsafe_allow_html=True)
+        with ke:
             sign = 1 if total_realized > 0 else (-1 if total_realized < 0 else 0)
-            st.markdown(card("Realized P&L",
+            st.markdown(card("Net Realized",
                              f"{'▲' if total_realized>=0 else '▼'} ${abs(total_realized):,.0f}",
                              None, sign), unsafe_allow_html=True)
-        with kd:
-            wl_sign = 1 if n_wins > n_loss else (-1 if n_loss > n_wins else 0)
-            st.markdown(card("Closed W / L", f"{n_wins}W  {n_loss}L", None, wl_sign),
-                        unsafe_allow_html=True)
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
@@ -1322,7 +1352,156 @@ with tab_trades:
         """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 6: STRATEGY GUIDE
+# TAB 6: P&L BREAKDOWN
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_pnl:
+    # ── Aggregate transaction costs from raw trades ───────────────────────────
+    pnl_rows: list[dict] = []
+    for k in filt_keys:
+        raw_trades = states[k].get("trades", [])
+        label      = SHORT.get(k, k)
+        init_cap   = settings.INITIAL_CAPITAL
+
+        total_costs   = sum(t.get("cost", 0.0) for t in raw_trades)
+        gross_gains   = sum(r["Real $"] for r in pos_records if r["_key"] == k and (r.get("Real $") or 0) > 0)
+        gross_losses  = sum(r["Real $"] for r in pos_records if r["_key"] == k and (r.get("Real $") or 0) < 0)
+        net_realized  = gross_gains + gross_losses
+        unrealized    = sum((r.get("Unreal $") or 0) for r in pos_records if r["_key"] == k and r["Status"] == "OPEN")
+        total_pnl     = net_realized + unrealized
+        pv            = states[k].get("portfolio_value", init_cap)
+
+        pnl_rows.append({
+            "Strategy":       label,
+            "Gross Gains $":  gross_gains,
+            "Gross Losses $": gross_losses,
+            "Net Realized $": net_realized,
+            "Transaction $":  -total_costs,
+            "Unrealized $":   unrealized,
+            "Total P&L $":    total_pnl,
+            "Total P&L %":    total_pnl / init_cap * 100 if init_cap else 0,
+        })
+
+    pnl_df = pd.DataFrame(pnl_rows).sort_values("Total P&L $", ascending=False)
+
+    # ── Portfolio totals ──────────────────────────────────────────────────────
+    tot_gains   = pnl_df["Gross Gains $"].sum()
+    tot_losses  = pnl_df["Gross Losses $"].sum()
+    tot_net_r   = pnl_df["Net Realized $"].sum()
+    tot_costs   = pnl_df["Transaction $"].sum()
+    tot_unreal  = pnl_df["Unrealized $"].sum()
+    tot_pnl     = pnl_df["Total P&L $"].sum()
+
+    # ── KPI cards ─────────────────────────────────────────────────────────────
+    st.markdown(f'<div class="section-hdr">Portfolio P&L Breakdown</div>', unsafe_allow_html=True)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1:
+        sign = 1 if tot_pnl >= 0 else -1
+        st.markdown(card("Total P&L",
+                         f"{'▲' if tot_pnl>=0 else '▼'} ${abs(tot_pnl):,.0f}",
+                         None, sign), unsafe_allow_html=True)
+    with c2:
+        st.markdown(card("Gross Gains", f"▲ ${tot_gains:,.0f}", None, 1), unsafe_allow_html=True)
+    with c3:
+        st.markdown(card("Gross Losses", f"▼ ${abs(tot_losses):,.0f}", None, -1 if tot_losses < 0 else 0),
+                    unsafe_allow_html=True)
+    with c4:
+        sign = 1 if tot_net_r >= 0 else -1
+        st.markdown(card("Net Realized",
+                         f"{'▲' if tot_net_r>=0 else '▼'} ${abs(tot_net_r):,.0f}",
+                         None, sign), unsafe_allow_html=True)
+    with c5:
+        st.markdown(card("Transaction Costs", f"▼ ${abs(tot_costs):,.0f}", None, -1),
+                    unsafe_allow_html=True)
+    with c6:
+        sign = 1 if tot_unreal >= 0 else -1
+        st.markdown(card("Unrealized P&L",
+                         f"{'▲' if tot_unreal>=0 else '▼'} ${abs(tot_unreal):,.0f}",
+                         None, sign), unsafe_allow_html=True)
+
+    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+    # ── Stacked waterfall chart ───────────────────────────────────────────────
+    col_wa, col_br = st.columns(2)
+
+    with col_wa:
+        st.markdown(f'<div class="section-hdr">P&L Waterfall (Portfolio)</div>', unsafe_allow_html=True)
+        components    = ["Gross Gains", "Gross Losses", "Transaction Costs", "Unrealized", "Net P&L"]
+        comp_vals     = [tot_gains, tot_losses, tot_costs, tot_unreal, tot_pnl]
+        comp_colors   = [C["green"], C["red"], C["orange"], C["cyan"],
+                         C["green"] if tot_pnl >= 0 else C["red"]]
+        fig_wf = go.Figure(go.Bar(
+            x=components, y=comp_vals,
+            marker=dict(color=comp_colors, opacity=0.85, line=dict(width=0)),
+            text=[f"${v:,.0f}" for v in comp_vals],
+            textposition="outside", textfont=dict(size=11, color=C["text"]),
+        ))
+        apply_layout(fig_wf, height=300, showlegend=False,
+                     yaxis=dict(tickprefix="$", tickformat=",.0f"))
+        st.plotly_chart(fig_wf, use_container_width=True)
+
+    with col_br:
+        st.markdown(f'<div class="section-hdr">Net P&L by Strategy</div>', unsafe_allow_html=True)
+        strat_pnl = pnl_df.set_index("Strategy")["Total P&L $"].sort_values()
+        colors    = [C["green"] if v >= 0 else C["red"] for v in strat_pnl]
+        fig_sp = go.Figure(go.Bar(
+            x=strat_pnl.values, y=strat_pnl.index, orientation="h",
+            marker=dict(color=colors, opacity=0.85, line=dict(width=0)),
+            text=[f"${v:,.0f}" for v in strat_pnl.values],
+            textposition="outside", textfont=dict(size=10, color=C["text"]),
+        ))
+        apply_layout(fig_sp, height=300, showlegend=False,
+                     xaxis=dict(tickprefix="$", tickformat=",.0f"))
+        st.plotly_chart(fig_sp, use_container_width=True)
+
+    # ── Per-strategy breakdown table ─────────────────────────────────────────
+    st.markdown(f'<div class="section-hdr">Per-Strategy Breakdown</div>', unsafe_allow_html=True)
+
+    def _pnl_color(v: float) -> str:
+        if v > 0:  return C["green"]
+        if v < 0:  return C["red"]
+        return C["muted"]
+
+    def _fmt(v: float) -> str:
+        sign = "+" if v > 0 else ""
+        return f"{sign}${v:,.0f}"
+
+    cols = ["Strategy", "Gross Gains $", "Gross Losses $", "Net Realized $",
+            "Transaction $", "Unrealized $", "Total P&L $", "Total P&L %"]
+    th_cells = "".join(f"<th>{c.replace(' $','').replace(' %','')}</th>" for c in cols)
+    trows = ""
+    for _, row in pnl_df.iterrows():
+        trows += "<tr>"
+        trows += f"<td>{row['Strategy']}</td>"
+        trows += f"<td style='color:{C['green']}'>{_fmt(row['Gross Gains $'])}</td>"
+        trows += f"<td style='color:{C['red']}'>{_fmt(row['Gross Losses $'])}</td>"
+        trows += f"<td style='color:{_pnl_color(row['Net Realized $'])}'>{_fmt(row['Net Realized $'])}</td>"
+        trows += f"<td style='color:{C['orange']}'>{_fmt(row['Transaction $'])}</td>"
+        trows += f"<td style='color:{_pnl_color(row['Unrealized $'])}'>{_fmt(row['Unrealized $'])}</td>"
+        trows += f"<td style='color:{_pnl_color(row['Total P&L $'])};font-weight:600'>{_fmt(row['Total P&L $'])}</td>"
+        trows += f"<td style='color:{_pnl_color(row['Total P&L %'])};font-weight:600'>{row['Total P&L %']:+.2f}%</td>"
+        trows += "</tr>"
+
+    # Totals row
+    trows += f"""<tr style='border-top:1px solid {C['border']};font-weight:700'>
+        <td>TOTAL</td>
+        <td style='color:{C['green']}'>{_fmt(tot_gains)}</td>
+        <td style='color:{C['red']}'>{_fmt(tot_losses)}</td>
+        <td style='color:{_pnl_color(tot_net_r)}'>{_fmt(tot_net_r)}</td>
+        <td style='color:{C['orange']}'>{_fmt(tot_costs)}</td>
+        <td style='color:{_pnl_color(tot_unreal)}'>{_fmt(tot_unreal)}</td>
+        <td style='color:{_pnl_color(tot_pnl)}'>{_fmt(tot_pnl)}</td>
+        <td style='color:{_pnl_color(tot_pnl)}'>{tot_pnl / (settings.INITIAL_CAPITAL * len(filt_keys)) * 100:+.2f}%</td>
+    </tr>"""
+
+    st.markdown(f"""
+    <div style="background:{C['card']};border:1px solid {C['border']};border-radius:10px;overflow:hidden;margin-top:8px">
+    <table class="perf-table"><thead><tr>{th_cells}</tr></thead><tbody>{trows}</tbody></table>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 7: STRATEGY GUIDE
 # ─────────────────────────────────────────────────────────────────────────────
 GUIDE = [
     {
@@ -1570,21 +1749,20 @@ GUIDE = [
         "notes": "This strategy essentially holds positions permanently — the 'overnight carry' is structural, not a trade. It earns by being in the right mix of assets at each close, not by timing entry/exit.",
     },
     {
-        "key": "s17_panic_reversal",
-        "title": "S17 · Market Panic Reversal",
-        "tags": [("Equity Long", "equity"), ("Mean Reversion", "equity"), ("5-Day Hold", "struct"), ("Empirical", "flow")],
-        "what": "Scans S&P 500 + NASDAQ-100 (~517 large-caps) for stocks that fell WITH the overall market during a VIX spike — a specific pattern that historically reverts at +1.98% average with 67% win rate within 5 days.",
-        "edge": "Built from our own empirical research on 102 stocks over 2 years. Key insight: stocks that crash ALONE on bad news do NOT revert (−0.51% average). But stocks that crash WITH the market during VIX > 25 episodes DO revert (+1.98%, t-stat 8.51). The driver: forced risk-parity deleveraging and ETF redemptions hit quality stocks indiscriminately — not because anything broke. When VIX mean-reverts, these bounce back sharply.",
+        "key": "s19_turn_of_month",
+        "title": "S19 · Turn-of-Month",
+        "tags": [("Seasonal", "macro"), ("Calendar", "struct"), ("Low Turnover", "struct")],
+        "what": "Holds 100% SPY during the last 4 and first 3 trading days of each month (the 'turn-of-month window'), and holds 100% SHY (short-term treasuries) for the rest of the month. Skips the equity position entirely when VIX > 30.",
+        "edge": "One of the most replicated seasonal anomalies in finance (Ariel 1987, Lakonishok & Smidt 1988). Institutional rebalancing, pension fund cash deployment, 401k contributions, and fund manager window dressing create predictable buying pressure in the ~8-day turn-of-month window. Roughly 0.4–0.6% premium per cycle, ~9 cycles/year, with minimal transaction costs due to very low turnover.",
         "entry": [
-            "VIX must be above 20 (elevated fear; indiscriminate selling regime required)",
-            "Stock fell at least -2% today",
-            "Stock's drop was co-movement with the market: relative loss vs SPY between -2% and 0% (fell with market, not alone — avoids idiosyncratic crashes)",
-            "Volume 0.7× to 2.5× average (normal to elevated — avoids extreme capitulation spikes which are continuation signals)",
-            "Score = size of drop × VIX premium above 20 × quality of co-movement. Buy top 8.",
+            "Last 4 trading days of the month: buy SPY at close",
+            "First 3 trading days of the next month: stay long SPY",
+            "All other days: hold SHY (short-term treasuries, ~cash equivalent)",
+            "VIX gate: if VIX > 30, skip SPY and stay in SHY — macro crises overwhelm the seasonal",
         ],
-        "exit_stop": "-3.0%", "exit_target": "+2.5%", "exit_time": "5 days",
-        "sizing": "Signal-weighted, max 12% per stock, up to 8 positions, 72% deployed (reserves for daily new signals)",
-        "notes": "The co-movement filter is the most important rule — it's what separates the real edge from buying every dip. If a stock falls -10% while the market is flat, that's NOT a panic reversal candidate.",
+        "exit_stop": "None (calendar-driven exit only)", "exit_target": "None", "exit_time": "Close of trading day +3 of new month",
+        "sizing": "100% SPY in window, 100% SHY out of window. Single position at all times.",
+        "notes": "Extremely low turnover — only 2 trades per month-turn cycle (~18 trades/year). The VIX gate adds robustness during crisis periods where the seasonal premium historically disappears.",
     },
 ]
 

@@ -307,19 +307,20 @@ class TestIndexInclusion:
         assert isinstance(sig, pd.DataFrame)
 
     def test_known_additions_generate_signal(self):
-        from strategies.s12_index_inclusion import IndexInclusion, KNOWN_ADDITIONS
+        from strategies.s12_index_inclusion import IndexInclusion
         from unittest.mock import patch
         import pandas as pd
-        # Use a ticker from KNOWN_ADDITIONS that has a recent-ish date
-        ticker, ann_str, eff_str = KNOWN_ADDITIONS[0]  # e.g., DELL
+        # Use a synthetic entry so the test doesn't depend on live KNOWN_ADDITIONS data
+        ticker, ann_str, eff_str = "AAPL", "2024-03-01", "2024-03-15"
         ann = pd.to_datetime(ann_str)
         eff = pd.to_datetime(eff_str)
-        # Need >= 30 rows for generate_signals; extend well before announcement
         start = ann - pd.Timedelta(days=60)
         dates = pd.bdate_range(start, eff + pd.Timedelta(days=5))
         prices = pd.DataFrame({ticker: [100.0] * len(dates)}, index=dates)
         s = IndexInclusion()
-        with patch("strategies.s12_index_inclusion._fetch_wikipedia_additions", return_value=[]):
+        fake_additions = [(ticker, ann_str, eff_str)]
+        with patch("strategies.s12_index_inclusion.KNOWN_ADDITIONS", fake_additions), \
+             patch("strategies.s12_index_inclusion._fetch_wikipedia_additions", return_value=[]):
             sig = s.generate_signals(prices)
         assert isinstance(sig, pd.DataFrame)
         if not sig.empty and ticker in sig.columns:
@@ -650,7 +651,11 @@ class TestPanicReversal:
         prices_data["SPY"][50]  = 97.8   # SPY -2.2% (co-movement)
         prices_data[ticker][51] = 99.0   # day+1: +1.5% from entry, below +2.5% PT -> carry lives
         prices = pd.DataFrame(prices_data, index=dates)
-        vix = pd.Series([28.0] * n, index=dates)
+        # VIX spikes from 18 to 28 on day 44 (>10% rise vs 5d ago) to satisfy spike filter
+        vix_vals = [18.0] * n
+        for i in range(46, n):
+            vix_vals[i] = 28.0
+        vix = pd.Series(vix_vals, index=dates)
         s = PanicReversal()
         sig = s.generate_signals(prices, vix=vix)
         assert isinstance(sig, pd.DataFrame)
@@ -668,8 +673,108 @@ class TestPanicReversal:
         prices_data["SPY"][50]  = 97.8
         prices_data[ticker][51] = 92.5   # day+1 craters -5% from entry -> stop
         prices = pd.DataFrame(prices_data, index=dates)
-        vix = pd.Series([28.0] * n, index=dates)
+        vix_vals = [18.0] * n
+        for i in range(46, n):
+            vix_vals[i] = 28.0
+        vix = pd.Series(vix_vals, index=dates)
         s = PanicReversal()
         sig = s.generate_signals(prices, vix=vix)
         if not sig.empty and ticker in sig.columns and 52 < n:
             assert sig.iloc[52][ticker] == pytest.approx(0.0)
+
+
+class TestTurnOfMonth:
+    """S19 — Turn-of-Month: calendar signal + VIX gate."""
+
+    def _make_prices(self, dates):
+        return pd.DataFrame({"SPY": [100.0] * len(dates), "SHY": [82.0] * len(dates)}, index=dates)
+
+    def test_in_window_spy_signal(self):
+        """Last 4 and first 3 trading days of month get SPY=1, SHY=0."""
+        from strategies.s19_turn_of_month import TurnOfMonth
+        # Use a full month so we have enough context
+        dates = pd.bdate_range("2024-01-01", "2024-02-15")
+        prices = self._make_prices(dates)
+        s = TurnOfMonth()
+        sig = s.generate_signals(prices)
+        assert not sig.empty
+        # Last trading day of January should be in window -> SPY signal
+        jan_dates = [d for d in dates if d.month == 1]
+        last_jan = jan_dates[-1]
+        assert sig.loc[last_jan, "SPY"] == pytest.approx(1.0)
+        assert sig.loc[last_jan, "SHY"] == pytest.approx(0.0)
+
+    def test_out_of_window_shy_signal(self):
+        """Mid-month dates get SHY=1, SPY=0."""
+        from strategies.s19_turn_of_month import TurnOfMonth
+        dates = pd.bdate_range("2024-01-01", "2024-02-15")
+        prices = self._make_prices(dates)
+        s = TurnOfMonth()
+        sig = s.generate_signals(prices)
+        # Mid-January (e.g. Jan 10) is well outside the TOM window
+        mid = pd.Timestamp("2024-01-10")
+        if mid in sig.index:
+            assert sig.loc[mid, "SHY"] == pytest.approx(1.0)
+            assert sig.loc[mid, "SPY"] == pytest.approx(0.0)
+
+    def test_vix_gate_overrides_window(self):
+        """VIX > 30 during TOM window => SHY, not SPY."""
+        from strategies.s19_turn_of_month import TurnOfMonth
+        dates = pd.bdate_range("2024-01-01", "2024-02-15")
+        prices = self._make_prices(dates)
+        vix = pd.Series([35.0] * len(dates), index=dates)   # always above gate
+        s = TurnOfMonth()
+        sig = s.generate_signals(prices, vix=vix)
+        # Even on last day of January (in-window), should be SHY
+        jan_dates = [d for d in dates if d.month == 1]
+        last_jan = jan_dates[-1]
+        assert sig.loc[last_jan, "SHY"] == pytest.approx(1.0)
+        assert sig.loc[last_jan, "SPY"] == pytest.approx(0.0)
+
+    def test_vix_below_gate_allows_window(self):
+        """VIX <= 30 during TOM window => SPY signal fires normally."""
+        from strategies.s19_turn_of_month import TurnOfMonth
+        dates = pd.bdate_range("2024-01-01", "2024-02-15")
+        prices = self._make_prices(dates)
+        vix = pd.Series([22.0] * len(dates), index=dates)
+        s = TurnOfMonth()
+        sig = s.generate_signals(prices, vix=vix)
+        jan_dates = [d for d in dates if d.month == 1]
+        last_jan = jan_dates[-1]
+        assert sig.loc[last_jan, "SPY"] == pytest.approx(1.0)
+
+    def test_position_sizing_in_window(self):
+        """position_sizing returns 100% SPY when SPY has signal."""
+        from strategies.s19_turn_of_month import TurnOfMonth
+        s = TurnOfMonth()
+        signals = pd.Series({"SPY": 1.0, "SHY": 0.0})
+        pos = s.position_sizing(signals)
+        assert pos == {"SPY": 1.0}
+
+    def test_position_sizing_out_of_window(self):
+        """position_sizing returns 100% SHY when only SHY has signal."""
+        from strategies.s19_turn_of_month import TurnOfMonth
+        s = TurnOfMonth()
+        signals = pd.Series({"SPY": 0.0, "SHY": 1.0})
+        pos = s.position_sizing(signals)
+        assert pos == {"SHY": 1.0}
+
+    def test_position_sizing_empty_defaults_shy(self):
+        """position_sizing defaults to SHY when signals are empty."""
+        from strategies.s19_turn_of_month import TurnOfMonth
+        s = TurnOfMonth()
+        pos = s.position_sizing(pd.Series({"SPY": 0.0, "SHY": 0.0}))
+        assert pos == {"SHY": 1.0}
+
+    def test_window_size(self):
+        """TOM window covers exactly TOM_ENTRY_DAYS + TOM_EXIT_DAYS per month-turn."""
+        from strategies.s19_turn_of_month import TurnOfMonth
+        # Use a single month in isolation to count window days
+        dates = pd.bdate_range("2024-01-01", "2024-01-31")
+        prices = self._make_prices(dates)
+        s = TurnOfMonth()
+        sig = s.generate_signals(prices)
+        spy_days = (sig["SPY"] > 0).sum()
+        # Last 4 of Jan + first 3 of Jan (start of month) = 7, but Jan has no prior Dec days
+        # so only last-4 of Jan counts within this range
+        assert spy_days == s.TOM_ENTRY_DAYS + s.TOM_EXIT_DAYS
