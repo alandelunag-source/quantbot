@@ -11,7 +11,7 @@ from strategies.s12_index_inclusion import IndexInclusion
 from strategies.s13_pre_earnings_drift import PreEarningsDrift
 from strategies.s14_gamma_wall import GammaWall
 from strategies.s15_short_flow import ShortFlow
-from strategies.s17_panic_reversal import PanicReversal
+from strategies.s19_turn_of_month import TurnOfMonth
 
 ALL_STRATEGIES = {
     "s01": MomentumDip,
@@ -26,6 +26,6 @@ ALL_STRATEGIES = {
     "s13": PreEarningsDrift,
     "s14": GammaWall,
     "s15": ShortFlow,
-    "s17": PanicReversal,
+    "s19": TurnOfMonth,
 }
 # S08 is an overlay — instantiated separately

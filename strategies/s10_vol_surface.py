@@ -107,12 +107,12 @@ class VolSurface(Strategy):
                 continue
 
             if z > VRP_LONG_THRESH:
-                # VRP elevated: short volatility via VXX short
-                # Represented as NEGATIVE VXX signal (short)
-                if "VXX" in signals.columns:
-                    signals.loc[date, "VXX"] = -min(MAX_SHORT_VOL_ALLOC, 0.03 * z)
+                # VRP elevated: harvest VRP via long SPY + SHY buffer
+                # Note: short VXX not used — ForwardTest doesn't track short liabilities
                 if "SPY" in signals.columns:
-                    signals.loc[date, "SPY"] = 0.95  # Long SPY as the "normal" allocation
+                    signals.loc[date, "SPY"] = 0.95
+                if "SHY" in signals.columns:
+                    signals.loc[date, "SHY"] = 0.05
             elif z < VRP_SHORT_THRESH:
                 # VRP compressed: buy protection
                 if "VXX" in signals.columns:
