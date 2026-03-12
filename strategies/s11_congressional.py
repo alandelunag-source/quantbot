@@ -171,6 +171,14 @@ class CongressionalTrades(Strategy):
             logger.info("[Congressional] No recent disclosures.")
             return pd.DataFrame()
 
+        # Keep purchases only — sales carry no long signal
+        if "type" in disclosures.columns:
+            disclosures = disclosures[
+                disclosures["type"].str.lower().str.contains("purchase|buy", na=False)
+            ]
+        if disclosures.empty:
+            return pd.DataFrame()
+
         today = datetime.today()
         disclosures["days_old"] = (today - disclosures["disclosure_date"]).dt.days.clip(lower=1)
         disclosures["recency_score"] = np.exp(-disclosures["days_old"] / 15.0)

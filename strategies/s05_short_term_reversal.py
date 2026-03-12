@@ -49,9 +49,12 @@ class ShortTermReversal(Strategy):
     PROFIT_TARGET  = 0.05   # +5%: unchanged (optimal confirmed by grid)
     TIME_STOP_DAYS = 10     # 10 calendar days max (reversal edge decays after first week)
 
+    SPY_TREND_GATE   = -0.03   # block new entries when SPY 5d return < -3% (market in downtrend)
+    BREADTH_CAP      = 15      # if >N tickers trigger simultaneously, it's a market event, not idiosyncratic
+
     def get_universe(self) -> list[str]:
         from data.universe import get_large_cap_universe
-        return get_large_cap_universe()
+        return get_large_cap_universe() + ["SPY"]
 
     def generate_signals(
         self,
@@ -61,6 +64,14 @@ class ShortTermReversal(Strategy):
     ) -> pd.DataFrame:
         if prices.empty or len(prices) < self.LOOKBACK + 25:
             return pd.DataFrame()
+
+        # Market trend gate: don't buy individual dips inside a falling market
+        if "SPY" in prices.columns:
+            spy_5d = prices["SPY"].pct_change(self.LOOKBACK).iloc[-1]
+            if not np.isnan(spy_5d) and spy_5d < self.SPY_TREND_GATE:
+                logger.debug("Reversal gate: SPY 5d=%.1f%% < %.0f%% — skipping entries",
+                             spy_5d * 100, self.SPY_TREND_GATE * 100)
+                return pd.DataFrame()
 
         signals = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
         ret_5d = prices.pct_change(self.LOOKBACK)
@@ -88,6 +99,14 @@ class ShortTermReversal(Strategy):
 
             except Exception as exc:
                 logger.debug("Reversal signal error %s: %s", ticker, exc)
+
+        # Breadth cap: if too many tickers triggered on the same day, it's a
+        # market-wide event (not idiosyncratic forced selling) — clear that day's signals.
+        for date in signals.index:
+            day_count = (signals.loc[date] > 0).sum()
+            if day_count > self.BREADTH_CAP:
+                signals.loc[date] = 0.0
+                logger.debug("Reversal breadth cap: %d signals on %s — cleared", day_count, date)
 
         return signals
 

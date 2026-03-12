@@ -90,7 +90,8 @@ class PanicReversal(Strategy):
 
     # Signal thresholds (from empirical analysis)
     MIN_DROP      = 0.020   # stock must be down at least 2%
-    VIX_GATE      = 20.0    # only trade in elevated VIX environment
+    VIX_GATE      = 25.0    # loser_recovery.py: edge is at VIX>25 (wr=67%), not >20
+    VIX_SPIKE_MIN = 0.10    # VIX must have risen >=10% vs 5 days ago (fresh panic, not chronic fear)
     MAX_REL_LOSS  = 0.020   # rel. to SPY: must be within 2% (co-movement)
     VOL_MIN       = 0.70    # not a dead market
     VOL_MAX       = 2.50    # not panic capitulation
@@ -130,6 +131,16 @@ class PanicReversal(Strategy):
 
             if vix_level < self.VIX_GATE:
                 continue   # low fear = no indiscriminate selling = no edge
+
+            # VIX spike recency: require a fresh panic, not chronic elevated fear.
+            # VIX grinding at 26 for 3 weeks has no reversion catalyst.
+            if vix is not None and i >= 5:
+                try:
+                    vix_5d_ago = float(vix.iloc[i - 5])
+                    if vix_5d_ago > 0 and (vix_level - vix_5d_ago) / vix_5d_ago < self.VIX_SPIKE_MIN:
+                        continue   # not a recent spike — skip
+                except Exception:
+                    pass
 
             spy_day_ret = float(spy_ret.iloc[i]) if not pd.isna(spy_ret.iloc[i]) else 0.0
             vix_factor = (vix_level - 20.0) / 20.0   # 0 at vix=20, 1 at vix=40

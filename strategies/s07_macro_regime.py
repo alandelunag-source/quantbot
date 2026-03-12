@@ -51,9 +51,10 @@ class MacroRegime(Strategy):
     rebalance_freq = "weekly"
     max_positions = 2
 
-    VIX_RISK_ON = 18.0
-    VIX_RISK_OFF = 28.0
-    CURVE_RISK_OFF = -0.50
+    VIX_RISK_ON      = 18.0
+    VIX_RISK_OFF     = 28.0   # enter risk-off above this
+    VIX_RISK_OFF_EXIT = 22.0  # only exit risk-off once VIX drops back below this (hysteresis)
+    CURVE_RISK_OFF   = -0.50
     HYG_LQD_LOOKBACK = 10   # days for credit ratio momentum
 
     def get_universe(self) -> list[str]:
@@ -113,6 +114,13 @@ class MacroRegime(Strategy):
 
             new_regime = _classify(vix_now, curve_now, spy_now, sma200_now,
                                    self.VIX_RISK_ON, self.VIX_RISK_OFF, self.CURVE_RISK_OFF)
+
+            # Hysteresis: once in risk-off, stay there until VIX drops below the
+            # exit threshold (22), not just the entry threshold (28).
+            # Prevents flip-flopping when VIX oscillates around 28.
+            if current_regime == RISK_OFF and new_regime != RISK_OFF:
+                if not np.isnan(vix_now) and vix_now > self.VIX_RISK_OFF_EXIT:
+                    new_regime = RISK_OFF   # not clear enough — stay defensive
 
             # Override with credit signals
             if credit_risk_off and new_regime == RISK_ON:
