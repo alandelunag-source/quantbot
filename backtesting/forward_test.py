@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 STATE_DIR = Path("state")
 
+# Module-level dividend cache: ticker -> pd.Series(ex_date -> div_per_share)
+# Reset each process; avoids redundant yfinance calls across strategies.
+_DIV_CACHE: dict = {}
+
 
 def is_trading_day(dt: datetime = None) -> bool:
     """Return True if dt (default: today) is a weekday (Mon-Fri)."""
@@ -106,6 +110,9 @@ class ForwardTest:
         # Profit lock: reset entry price when gain threshold exceeded (e.g. monthly strategies)
         self._apply_profit_lock(current_prices, pv, today)
 
+        # Dividend credit: fetch real ex-dividend events and credit cash
+        self._apply_dividends(today)
+
         # Full rebalance + daily log: close session only, once per day
         if session == "close":
             last_log = self._state["daily_log"][-1] if self._state["daily_log"] else {}
@@ -117,6 +124,59 @@ class ForwardTest:
 
         self._save_state()
         return self._summary(today)
+
+    def _apply_dividends(self, today: str) -> None:
+        """
+        Credit actual cash dividends for any held position whose ex-dividend date
+        matches today. Uses yfinance dividend history (real events, not proxies).
+        Fires every session but deduplicates â€” each ticker credited at most once per day.
+        """
+        import yfinance as yf
+
+        today_ts = pd.Timestamp(today).normalize()
+
+        for ticker, pos in list(self._state["positions"].items()):
+            # Dedup: skip if already credited today
+            already = any(
+                t.get("action") == "DIVIDEND" and t.get("ticker") == ticker and t.get("date") == today
+                for t in self._state["trades"]
+            )
+            if already:
+                continue
+
+            try:
+                if ticker not in _DIV_CACHE:
+                    d = yf.Ticker(ticker).dividends
+                    d.index = d.index.tz_localize(None).normalize()
+                    _DIV_CACHE[ticker] = d
+                divs_norm = _DIV_CACHE[ticker]
+                if divs_norm.empty:
+                    continue
+                if today_ts not in divs_norm.index:
+                    continue
+
+                div_per_share = float(divs_norm.loc[today_ts].iloc[0]
+                                      if hasattr(divs_norm.loc[today_ts], "iloc")
+                                      else divs_norm.loc[today_ts])
+                shares        = pos["shares"]
+                total_div     = div_per_share * shares
+
+                self._state["cash"] += total_div
+                self._state["trades"].append({
+                    "date":          today,
+                    "ticker":        ticker,
+                    "action":        "DIVIDEND",
+                    "dollar_value":  round(total_div, 2),
+                    "div_per_share": round(div_per_share, 6),
+                    "shares":        round(shares, 4),
+                    "note":          f"ex-div ${div_per_share:.4f}/sh",
+                })
+                logger.info(
+                    "[FT:%s] Dividend %s: $%.4f/sh x %.2f sh = $%.2f",
+                    self.strategy.name, ticker, div_per_share, shares, total_div,
+                )
+            except Exception as exc:
+                logger.debug("[FT:%s] Dividend check failed for %s: %s", self.strategy.name, ticker, exc)
 
     def _apply_exit_rules(
         self,
@@ -179,7 +239,7 @@ class ForwardTest:
             )
 
             weight = pos.get("weight", 0.0)
-            # Record SELL — use actual weight so dashboard lifecycle tracker sees a full close
+            # Record SELL ï¿½ use actual weight so dashboard lifecycle tracker sees a full close
             self._state["trades"].append({
                 "date": today, "ticker": ticker,
                 "action": "SELL", "delta_weight": weight,
@@ -187,7 +247,7 @@ class ForwardTest:
                 "cost": round(cost / 2, 4),
                 "note": f"profit_lock +{gain:.1%}",
             })
-            # Record BUY — fresh cost basis at current price for next leg
+            # Record BUY ï¿½ fresh cost basis at current price for next leg
             self._state["trades"].append({
                 "date": today, "ticker": ticker,
                 "action": "BUY", "delta_weight": weight,
