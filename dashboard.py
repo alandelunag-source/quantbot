@@ -352,6 +352,19 @@ def build_summary(states: dict, spy_series: pd.Series) -> pd.DataFrame:
         else:
             sharpe = None
 
+        # Annualized return from daily_log date range
+        ann_ret = None
+        if len(daily) >= 2:
+            try:
+                d0 = pd.Timestamp(daily[0]["date"])
+                d1 = pd.Timestamp(daily[-1]["date"])
+                cal_days = (d1 - d0).days
+                if cal_days > 0:
+                    total_ret_dec = pv / START_CASH - 1
+                    ann_ret = ((1 + total_ret_dec) ** (365 / cal_days) - 1) * 100
+            except Exception:
+                pass
+
         # SPY return over same window
         spy_ret = 0.0
         if not spy_series.empty and start_dt:
@@ -375,6 +388,7 @@ def build_summary(states: dict, spy_series: pd.Series) -> pd.DataFrame:
             "Invested":   invested,
             "Cash":       cash,
             "Return":     total_ret,
+            "Ann Ret":    ann_ret,
             "Alpha":      alpha,
             "SPY Ret":    spy_ret,
             "Max DD":     max_dd,
@@ -596,8 +610,8 @@ with tab_ov:
     # ── Summary table ────────────────────────────────────────────────────────
     st.markdown('<div class="section-hdr">Performance Table</div>', unsafe_allow_html=True)
 
-    tbl = filt_summary[["Strategy","Value","Invested","Cash","Return","Alpha","SPY Ret","Max DD","Sharpe","Positions","Trades"]].copy()
-    tbl.columns = ["Strategy","Value ($)","Invested ($)","Cash ($)","Return (%)","Alpha (%)","SPY (%)","Max DD (%)","Sharpe","Pos","Trades"]
+    tbl = filt_summary[["Strategy","Value","Invested","Cash","Return","Ann Ret","Alpha","SPY Ret","Max DD","Sharpe","Positions","Trades"]].copy()
+    tbl.columns = ["Strategy","Value ($)","Invested ($)","Cash ($)","Return (%)","Ann Ret (%)","Alpha (%)","SPY (%)","Max DD (%)","Sharpe","Pos","Trades"]
 
     # Format helpers
     def fmt_pct(v):
@@ -605,6 +619,12 @@ with tab_ov:
         color = C["green"] if v > 0 else (C["red"] if v < 0 else C["muted"])
         sym   = "▲" if v > 0 else ("▼" if v < 0 else "")
         return f'<span style="color:{color};font-weight:600;">{sym}{abs(v):.3f}%</span>'
+
+    def fmt_ann_ret(v):
+        if v is None or pd.isna(v): return "—"
+        color = C["green"] if v > 0 else C["red"]
+        sym   = "▲" if v > 0 else "▼"
+        return f'<span style="color:{color};font-weight:600;">{sym}{abs(v):.1f}%</span>'
 
     def fmt_sharpe(v):
         if v is None or pd.isna(v): return "—"
@@ -663,7 +683,7 @@ with tab_ov:
                 f'<thead><tr>{hdr}</tr></thead><tbody>{inner}</tbody></table>')
 
     html_rows = ""
-    NCOLS = 12  # strategy + 10 data cols + expand arrow
+    NCOLS = 13  # strategy + 11 data cols + expand arrow
     for _, row in tbl.iterrows():
         key = filt_summary.loc[filt_summary["Strategy"] == row["Strategy"], "key"].values[0]
         safe_key = key.replace("_", "-")
@@ -680,6 +700,7 @@ with tab_ov:
             <td style="color:{C['cyan']};font-family:'Courier New',monospace;">${row['Invested ($)']:,.0f}</td>
             <td>{fmt_cash(row['Cash ($)'])}</td>
             <td>{fmt_pct(row['Return (%)'])}</td>
+            <td>{fmt_ann_ret(row['Ann Ret (%)'])}</td>
             <td>{fmt_pct(row['Alpha (%)'])}</td>
             <td style="color:{C['muted']};">{row['SPY (%)']:+.3f}%</td>
             <td style="color:{C['red'] if row['Max DD (%)'] < 0 else C['muted']};">{row['Max DD (%)']:.3f}%</td>
@@ -693,7 +714,7 @@ with tab_ov:
             </td>
         </tr>"""
 
-    header_cols = ["Strategy","Value ($)","Invested ($)","Cash ($)","Return","Alpha","SPY","Max DD","Sharpe","Pos","Trades"]
+    header_cols = ["Strategy","Value ($)","Invested ($)","Cash ($)","Return","Ann Ret","Alpha","SPY","Max DD","Sharpe","Pos","Trades"]
     th = "".join(f"<th>{c}</th>" for c in header_cols)
 
     n_rows = len(filt_summary)
