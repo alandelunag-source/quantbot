@@ -13,7 +13,7 @@ Usage:
   python main.py paper --strategy s03        # Paper trade one strategy
   python main.py status                      # Current positions + performance
 
-Strategy codes: s01 s02 s03 s04 s05 s06 s07 s09 s10
+Active strategies: s01 s02 s03 s05 s07 s09 s10 s11 s12 s13 s14 s15 s19
 """
 from __future__ import annotations
 
